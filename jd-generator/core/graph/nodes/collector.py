@@ -84,7 +84,10 @@ def process_user_input(
         return None, []  # No error, just skip this field
     
     # Field-specific processing
-    if field_name == "job_title":
+    if field_name == "background_intro":
+        return process_background_intro(cleaned_input)
+    
+    elif field_name == "job_title":
         return process_job_title(cleaned_input)
     
     elif field_name == "department":
@@ -119,6 +122,16 @@ def process_user_input(
     
     else:
         return cleaned_input, []
+
+
+def process_background_intro(input_text: str) -> tuple[str, List[str]]:
+    """Process background introduction input."""
+    errors = []
+    
+    if len(input_text) < 10:
+        errors.append("Please tell me a bit more about yourself and your career interests.")
+    
+    return input_text.strip(), errors
 
 
 def process_job_title(input_text: str) -> tuple[str, List[str]]:

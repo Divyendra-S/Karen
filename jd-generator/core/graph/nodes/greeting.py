@@ -18,16 +18,16 @@ def greeting_node(state: GraphState) -> Dict[str, Any]:
         State updates dictionary with greeting message and phase change
     """
     greeting_message = (
-        "Hi! I'm your AI assistant for creating comprehensive job descriptions. "
-        "I'll guide you through a series of questions to gather all the necessary "
-        "information about the position you want to post.\n\n"
-        "The process typically takes 5-10 minutes and covers:\n"
-        "• Job title and department\n"
-        "• Experience and skill requirements\n"
-        "• Key responsibilities\n"
-        "• Location and employment details\n"
-        "• Compensation and benefits\n\n"
-        "Let's start with the basics! What is the job title for this position?"
+        "Hello! I'm an HR interviewer and I'm here to learn about your background "
+        "and career preferences so I can help create a job description that matches "
+        "what you're looking for.\n\n"
+        "This interview will take about 5-10 minutes and I'll ask you about:\n"
+        "• Your ideal job title and department\n"
+        "• Your experience and skills\n"
+        "• Types of responsibilities you enjoy\n"
+        "• Your preferred work environment\n"
+        "• Compensation and benefits that matter to you\n\n"
+        "Let's start! Could you tell me a bit about yourself and what kind of role you're interested in?"
     )
     
     # Create new message for state
@@ -44,7 +44,7 @@ def greeting_node(state: GraphState) -> Dict[str, Any]:
     return {
         **state,
         "messages": new_messages,
-        "current_field": "job_title",
+        "current_field": "background_intro",
         "conversation_phase": "collecting_basic_info"
     }
 
@@ -56,11 +56,11 @@ def create_welcome_message() -> str:
         Formatted welcome message string
     """
     return (
-        "Welcome to the AI Job Description Generator! 🎯\n\n"
-        "I'll help you create a professional, comprehensive job description "
-        "by asking you targeted questions about the role. The entire process "
-        "is designed to be conversational and efficient.\n\n"
-        "Ready to get started?"
+        "Welcome to your personalized career interview! 🎯\n\n"
+        "I'm here to understand your background, skills, and career goals "
+        "so I can create a job description tailored to what you're looking for. "
+        "This conversation is designed to be natural and focused on you.\n\n"
+        "Ready to tell me about your career aspirations?"
     )
 
 
@@ -71,14 +71,14 @@ def get_process_explanation() -> str:
         Process explanation text
     """
     return (
-        "Here's how this works:\n\n"
-        "1. **Basic Information**: Job title, department, employment type\n"
-        "2. **Experience & Skills**: Required background and competencies\n"
-        "3. **Responsibilities**: Key duties and expectations\n"
-        "4. **Requirements**: Education, location, and other specifics\n"
-        "5. **Compensation**: Salary range and benefits (optional)\n"
-        "6. **Generation**: I'll create a polished job description\n\n"
-        "You can use voice input or typing - whatever feels more natural!"
+        "Here's how our interview works:\n\n"
+        "1. **Your Background**: Tell me about your current role and experience\n"
+        "2. **Your Skills**: What technical and soft skills do you want to use?\n"
+        "3. **Your Preferences**: What responsibilities do you enjoy most?\n"
+        "4. **Your Requirements**: Location, work style, and education background\n"
+        "5. **Your Goals**: Compensation expectations and benefits you value\n"
+        "6. **Your Job Description**: I'll create a personalized JD based on your input\n\n"
+        "Feel free to speak naturally - this is your interview!"
     )
 
 
@@ -105,9 +105,9 @@ def get_initial_question() -> str:
     """Get the first question to ask the user.
     
     Returns:
-        Initial question about job title
+        Initial question about their background
     """
-    return "What is the job title for this position?"
+    return "Could you tell me a bit about yourself and what kind of role you're interested in?"
 
 
 def create_greeting_with_context(
@@ -132,11 +132,11 @@ def create_greeting_with_context(
     
     if company_name:
         greeting_parts.append(
-            f"I'm here to help you create a job description for {company_name}."
+            f"I'm here to interview you and understand what kind of role you'd be perfect for at {company_name}."
         )
     else:
         greeting_parts.append(
-            "I'm here to help you create a professional job description."
+            "I'm here to interview you and understand what kind of role would be perfect for your career goals."
         )
     
     greeting_parts.append(get_process_explanation())

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     
     # Groq Model Configuration
     llm_model: str = Field(
-        "llama-3.1-70b-versatile",
+        "openai/gpt-oss-120b",
         description="Default Groq model to use"
     )
     llm_temperature: float = Field(0.7, description="LLM temperature setting")
