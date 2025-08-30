@@ -1,0 +1,35 @@
+# Core dependencies
+python-dotenv==1.0.1
+pydantic>=2.11.0
+pydantic-settings>=2.10.0
+
+# LangChain and LangGraph
+langchain>=0.1.0
+langchain-groq>=0.1.0
+langgraph>=0.0.26
+
+# Groq for LLM and Whisper
+groq==0.4.1
+
+# Web UI
+streamlit==1.30.0
+streamlit-chat==0.1.1
+
+# Audio processing
+SpeechRecognition==3.10.1
+pydub==0.25.1
+
+# Logging and utilities
+loguru==0.7.2
+python-multipart==0.0.6
+
+# Development dependencies
+pytest==7.4.4
+black==23.12.1
+ruff==0.1.11
+mypy==1.8.0
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+
+# Type stubs
+# types-python-dotenv==1.0.0  # Not available for this version
