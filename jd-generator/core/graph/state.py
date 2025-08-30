@@ -111,7 +111,7 @@ def add_validation_error(state: GraphState, error: str) -> GraphState:
         Updated state with new validation error
     """
     new_errors = state["validation_errors"] + [error]
-    new_retry_count = state.get("retry_count", 0) + 1
+    new_retry_count = min(state.get("retry_count", 0) + 1, 3)
     
     return {
         **state, 

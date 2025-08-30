@@ -1,44 +1,42 @@
-"""Greeting node implementation with pure function design."""
+"""Greeting node implementation with dynamic LLM generation."""
 
 from typing import Dict, Any, Optional
 from datetime import datetime
 from ...models.graph_state import GraphState
+import streamlit as st
+from app.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def greeting_node(state: GraphState) -> Dict[str, Any]:
-    """Initial greeting node that welcomes user and explains the process.
+    """Initial greeting node that dynamically generates welcome message.
     
-    This pure function initiates the conversation with a friendly greeting
-    and sets up the initial state for job description generation.
+    Uses LLM to create personalized, context-aware greeting messages
+    based on user input and session context.
     
     Args:
         state: Current graph state
         
     Returns:
-        State updates dictionary with greeting message and phase change
+        State updates dictionary with dynamic greeting message
     """
-    greeting_message = (
-        "Hi! I'm your AI assistant for creating comprehensive job descriptions. "
-        "I'll guide you through a series of questions to gather all the necessary "
-        "information about the position you want to post.\n\n"
-        "The process typically takes 5-10 minutes and covers:\n"
-        "• Job title and department\n"
-        "• Experience and skill requirements\n"
-        "• Key responsibilities\n"
-        "• Location and employment details\n"
-        "• Compensation and benefits\n\n"
-        "Let's start with the basics! What is the job title for this position?"
-    )
+    # Get last user message to understand how they initiated conversation
+    last_user_message = _get_last_user_message_content(state)
+    
+    # Generate dynamic greeting response
+    greeting_message = generate_dynamic_greeting(last_user_message, state)
     
     # Create new message for state
     new_message = {
         "role": "assistant",
         "content": greeting_message,
-        "message_type": "question",
+        "message_type": "greeting",
         "timestamp": datetime.utcnow().isoformat()
     }
     
-    # Update state with greeting message
+    # Update state with greeting message and start job_title collection
     new_messages = state.get("messages", []) + [new_message]
     
     return {
@@ -49,115 +47,117 @@ def greeting_node(state: GraphState) -> Dict[str, Any]:
     }
 
 
-def create_welcome_message() -> str:
-    """Create a welcome message for the conversation.
-    
-    Returns:
-        Formatted welcome message string
-    """
-    return (
-        "Welcome to the AI Job Description Generator! 🎯\n\n"
-        "I'll help you create a professional, comprehensive job description "
-        "by asking you targeted questions about the role. The entire process "
-        "is designed to be conversational and efficient.\n\n"
-        "Ready to get started?"
-    )
-
-
-def get_process_explanation() -> str:
-    """Get explanation of the JD generation process.
-    
-    Returns:
-        Process explanation text
-    """
-    return (
-        "Here's how this works:\n\n"
-        "1. **Basic Information**: Job title, department, employment type\n"
-        "2. **Experience & Skills**: Required background and competencies\n"
-        "3. **Responsibilities**: Key duties and expectations\n"
-        "4. **Requirements**: Education, location, and other specifics\n"
-        "5. **Compensation**: Salary range and benefits (optional)\n"
-        "6. **Generation**: I'll create a polished job description\n\n"
-        "You can use voice input or typing - whatever feels more natural!"
-    )
-
-
-def should_show_process_explanation(state: GraphState) -> bool:
-    """Determine if process explanation should be included.
-    
-    Args:
-        state: Current graph state
+def generate_dynamic_greeting(user_input: Optional[str], state: GraphState) -> str:
+    """Generate dynamic greeting using LLM based on user's initial message."""
+    try:
+        # Extract any name mentioned in user's input
+        user_name = _extract_name_from_input(user_input) if user_input else None
         
-    Returns:
-        True if explanation should be shown
-    """
+        greeting_prompt = f"""The user just started a conversation by saying: "{user_input or 'Hello'}"
+
+You are an AI interviewer conducting a profile assessment. Generate a warm, professional greeting that:
+1. Responds naturally to their message
+2. {f"Uses their name ({user_name})" if user_name else "Greets them warmly"}
+3. Explains you're here to understand their professional profile and experience
+4. Shows interest in learning about their background
+5. Keep it conversational and under 40 words
+
+Make it feel natural and engaging, not robotic.
+
+Example responses:
+- If they said "Hi": "Hi there! I'm here to learn about your professional background and experience. Tell me about yourself!"
+- If they said "Hello, I'm John": "Hello John! Nice to meet you. I'd love to learn about your professional background and experience."
+- If they said "I'm a software developer": "Great to meet you! I'd love to learn more about your experience as a software developer."
+
+Generate greeting response:"""
+
+        if hasattr(st, 'session_state') and 'groq_client' in st.session_state:
+            logger.info("🔄 Calling Groq API for dynamic greeting generation")
+            completion = st.session_state.groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": greeting_prompt}],
+                model=settings.llm_model,
+                max_tokens=60,
+                temperature=0.4
+            )
+            
+            generated_greeting = completion.choices[0].message.content.strip()
+            logger.info(f"✅ LLM Generated greeting: '{generated_greeting}'")
+            return generated_greeting
+        else:
+            # Minimal fallback
+            logger.warning("⚠️ Using hardcoded fallback greeting - LLM client not available")
+            return _get_minimal_greeting_fallback(user_name)
+            
+    except Exception as e:
+        logger.error(f"Error generating dynamic greeting: {e}")
+        return _get_minimal_greeting_fallback(user_name)
+
+
+def _extract_name_from_input(user_input: str) -> Optional[str]:
+    """Extract user's name from their input."""
+    if not user_input:
+        return None
+        
+    import re
+    
+    input_lower = user_input.lower()
+    
+    # Common introduction patterns
+    patterns = [
+        r"i am (\w+)",
+        r"i'm (\w+)", 
+        r"my name is (\w+)",
+        r"call me (\w+)",
+        r"this is (\w+)",
+        r"hi.* i'm (\w+)",
+        r"hello.* i'm (\w+)"
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, input_lower)
+        if match:
+            name = match.group(1)
+            # Filter out common non-name words
+            non_names = ["there", "here", "good", "fine", "well", "ok", "yes", "no", "looking", "trying"]
+            if name not in non_names and len(name) > 1:
+                return name.title()
+    
+    return None
+
+
+def _get_last_user_message_content(state: GraphState) -> Optional[str]:
+    """Get the last user message content."""
     messages = state.get("messages", [])
-    
-    # Show explanation for new conversations
-    if len(messages) == 0:
-        return True
-    
-    # Don't repeat explanation
-    return False
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            return msg.get("content", "")
+    return None
 
 
-def get_initial_question() -> str:
-    """Get the first question to ask the user.
-    
-    Returns:
-        Initial question about job title
-    """
-    return "What is the job title for this position?"
-
-
-def create_greeting_with_context(
-    user_name: Optional[str] = None,
-    company_name: Optional[str] = None
-) -> str:
-    """Create personalized greeting with available context.
-    
-    Args:
-        user_name: Optional user name for personalization
-        company_name: Optional company name for context
-        
-    Returns:
-        Personalized greeting message
-    """
-    greeting_parts = []
-    
+def _get_minimal_greeting_fallback(user_name: Optional[str]) -> str:
+    """Minimal greeting fallback when LLM fails."""
     if user_name:
-        greeting_parts.append(f"Hi {user_name}!")
+        return f"Hi {user_name}! I'd love to learn about your professional background and experience."
     else:
-        greeting_parts.append("Hi there!")
+        return "Hello! I'm here to understand your professional profile and experience. Tell me about yourself!"
+
+
+def should_personalize_greeting(state: GraphState) -> bool:
+    """Determine if greeting should be personalized based on context."""
+    session_metadata = state.get("session_metadata", {})
     
-    if company_name:
-        greeting_parts.append(
-            f"I'm here to help you create a job description for {company_name}."
-        )
-    else:
-        greeting_parts.append(
-            "I'm here to help you create a professional job description."
-        )
-    
-    greeting_parts.append(get_process_explanation())
-    greeting_parts.append(get_initial_question())
-    
-    return "\n\n".join(greeting_parts)
+    # Personalize if we have user information
+    return bool(
+        session_metadata.get("user_name") or 
+        session_metadata.get("company_name")
+    )
 
 
 def extract_session_context(state: GraphState) -> Dict[str, Any]:
-    """Extract session context from state metadata.
-    
-    Args:
-        state: Current graph state
-        
-    Returns:
-        Dictionary of session context information
-    """
+    """Extract session context for greeting personalization."""
     session_metadata = state.get("session_metadata", {})
     
     return {
-        "session_id": session_metadata.get("session_id"),
         "user_name": session_metadata.get("user_name"),
         "company_name": session_metadata.get("company_name"),
         "voice_enabled": session_metadata.get("voice_enabled", False),
@@ -165,19 +165,57 @@ def extract_session_context(state: GraphState) -> Dict[str, Any]:
     }
 
 
-def customize_greeting_by_context(state: GraphState) -> str:
-    """Customize greeting message based on session context.
-    
-    Args:
-        state: Current graph state
+def create_greeting_with_company_context(
+    user_name: Optional[str],
+    company_name: Optional[str],
+    user_input: str
+) -> str:
+    """Create greeting with company context using LLM."""
+    try:
+        company_prompt = f"""Generate a greeting for someone from {company_name or 'a company'} who said: "{user_input}"
+
+Include:
+1. Warm greeting {f"using name {user_name}" if user_name else ""}
+2. {f"Reference to {company_name}" if company_name else "Professional tone"}
+3. Explain you'll help create their job description
+4. Ask what position they're hiring for
+
+Keep it under 35 words and professional.
+"""
+
+        if hasattr(st, 'session_state') and 'groq_client' in st.session_state:
+            completion = st.session_state.groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": company_prompt}],
+                model=settings.llm_model,
+                max_tokens=50,
+                temperature=0.3
+            )
+            
+            return completion.choices[0].message.content.strip()
+        else:
+            base = f"Hi {user_name}!" if user_name else "Hello!"
+            company_part = f" Thanks for reaching out from {company_name}." if company_name else ""
+            return f"{base}{company_part} I'd love to learn about your professional background and experience."
+            
+    except Exception as e:
+        logger.error(f"Error with company context greeting: {e}")
+        return _get_minimal_greeting_fallback(user_name)
+
+
+def is_greeting_message(user_input: str) -> bool:
+    """Check if user input appears to be an initial greeting."""
+    if not user_input:
+        return False
         
-    Returns:
-        Contextualized greeting message
-    """
-    context = extract_session_context(state)
+    greeting_indicators = [
+        "hi", "hello", "hey", "good morning", "good afternoon", 
+        "good evening", "greetings", "yo", "sup"
+    ]
     
-    # Use context to personalize greeting
-    return create_greeting_with_context(
-        user_name=context.get("user_name"),
-        company_name=context.get("company_name")
+    input_lower = user_input.lower().strip()
+    
+    # Check if input starts with or contains greeting words
+    return (
+        any(input_lower.startswith(greeting) for greeting in greeting_indicators) or
+        any(greeting in input_lower for greeting in greeting_indicators) and len(input_lower) < 50
     )

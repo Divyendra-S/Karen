@@ -1,127 +1,56 @@
-"""Question routing and generation nodes with functional patterns."""
+"""Question routing and generation nodes with pure LLM-driven approach."""
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime
 from ...models.graph_state import GraphState
 from ...models.conversation import ConversationPhase
+import streamlit as st
+from app.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def question_router_node(state: GraphState) -> Dict[str, Any]:
     """Route to appropriate question based on current state.
     
     Pure function that analyzes conversation state and determines
-    what field to collect next based on priority and completeness.
+    next action based on completion and clarification needs.
     
     Args:
         state: Current graph state
         
     Returns:
-        State updates with next field to collect
+        State updates with routing decisions
     """
-    # Get next field to collect
-    next_field = _determine_next_field(state)
+    current_field = state.get("current_field")
+    clarification_needed = state.get("clarification_needed", [])
+    processed_data = state.get("processed_data", {})
+    is_complete = state.get("is_complete", False)
     
-    if next_field is None:
-        # All fields collected, mark as ready for generation
+    # If conversation is complete, mark it
+    if is_complete or not current_field:
         return {
             **state,
-            "current_field": None,
-            "is_complete": True,
             "conversation_phase": ConversationPhase.REVIEWING_DATA.value
         }
     
-    # Update conversation phase based on field type
-    phase = _determine_phase_for_field(next_field)
+    # If current field needs clarification, keep asking about it
+    if current_field in clarification_needed:
+        return {
+            **state,
+            "conversation_phase": _determine_phase_for_field(current_field).value
+        }
     
+    # Otherwise, continue with current field collection
     return {
         **state,
-        "current_field": next_field,
-        "conversation_phase": phase.value
+        "conversation_phase": _determine_phase_for_field(current_field).value
     }
-
-
-def _determine_next_field(state: GraphState) -> Optional[str]:
-    """Determine the next field to collect based on current state."""
-    collected_fields = set(_get_collected_fields(state))
-    
-    # Define collection priority order
-    field_priority = [
-        "job_title",
-        "department", 
-        "employment_type",
-        "location",
-        "experience",
-        "responsibilities",
-        "skills",
-        "education",
-        "salary",
-        "benefits",
-        "additional_requirements"
-    ]
-    
-    # Find next uncollected field
-    for field in field_priority:
-        if field not in collected_fields:
-            return field
-    
-    return None
-
-
-def _get_collected_fields(state: GraphState) -> List[str]:
-    """Get list of fields that have been collected."""
-    return [
-        field for field, value in state.get("job_data", {}).items()
-        if value is not None and value != "" and value != []
-    ]
-
-
-def question_generator_node(state: GraphState) -> Dict[str, Any]:
-    """Generate contextual questions based on current field and state.
-    
-    Pure function that creates appropriate questions for the current
-    field being collected, with context from previous responses.
-    
-    Args:
-        state: Current graph state
-        
-    Returns:
-        State updates with generated question message
-    """
-    current_field = state.get("current_field")
-    if not current_field:
-        return state
-    
-    # Check if this is a retry
-    retry_count = state.get("retry_count", 0)
-    validation_errors = state.get("validation_errors", [])
-    
-    if retry_count > 0 and validation_errors:
-        question = _generate_retry_question(current_field, validation_errors, retry_count)
-    else:
-        question = _generate_initial_question(current_field, state)
-    
-    # Add question to conversation
-    new_message = {
-        "role": "assistant",
-        "content": question,
-        "message_type": "question",
-        "timestamp": datetime.utcnow().isoformat(),
-        "related_field": current_field
-    }
-    
-    new_messages = state.get("messages", []) + [new_message]
-    return {**state, "messages": new_messages}
 
 
 def _determine_phase_for_field(field_name: str) -> ConversationPhase:
-    """Determine conversation phase based on field being collected.
-    
-    Args:
-        field_name: Name of the field being collected
-        
-    Returns:
-        Appropriate conversation phase
-    """
+    """Determine conversation phase based on field being collected."""
     phase_mapping = {
         "job_title": ConversationPhase.COLLECTING_BASIC_INFO,
         "department": ConversationPhase.COLLECTING_BASIC_INFO,
@@ -139,287 +68,279 @@ def _determine_phase_for_field(field_name: str) -> ConversationPhase:
     return phase_mapping.get(field_name, ConversationPhase.COLLECTING_REQUIREMENTS)
 
 
-def _generate_initial_question(field_name: str, state: GraphState) -> str:
-    """Generate initial question for a specific field.
-    
-    Args:
-        field_name: Field to generate question for
-        state: Current graph state for context
-        
-    Returns:
-        Generated question text
-    """
-    job_data = state.get("job_data", {})
-    
-    questions = {
-        "job_title": "What is the job title for this position?",
-        
-        "department": _get_department_question(job_data),
-        
-        "employment_type": (
-            "What type of employment is this? For example:\n"
-            "• Full-time permanent position\n"
-            "• Part-time\n" 
-            "• Contract/consulting\n"
-            "• Internship\n"
-            "• Temporary"
-        ),
-        
-        "location": _get_location_question(job_data),
-        
-        "experience": _get_experience_question(job_data),
-        
-        "responsibilities": (
-            "What are the key responsibilities and day-to-day duties for this role? "
-            "Please describe the main tasks and expectations."
-        ),
-        
-        "skills": _get_skills_question(job_data),
-        
-        "education": (
-            "What are the education requirements? For example:\n"
-            "• Bachelor's degree in Computer Science\n"
-            "• Master's preferred\n"
-            "• High school diploma\n"
-            "• No specific education required"
-        ),
-        
-        "salary": (
-            "What is the salary range for this position? "
-            "(This is optional - you can skip if you prefer not to specify)"
-        ),
-        
-        "benefits": (
-            "What benefits and perks are offered? For example:\n"
-            "• Health insurance\n"
-            "• 401k matching\n"
-            "• Flexible PTO\n"
-            "• Remote work options\n"
-            "(Optional - you can skip this)"
-        ),
-        
-        "additional_requirements": (
-            "Are there any additional requirements or special considerations? "
-            "For example, security clearance, travel, certifications, etc. "
-            "(Optional - you can skip this)"
-        )
-    }
-    
-    return questions.get(field_name, f"Please provide information about {field_name}.")
-
-
-def _get_department_question(job_data: Dict[str, Any]) -> str:
-    """Generate contextual department question."""
-    job_title = job_data.get("job_title", "").lower()
-    
-    if "engineer" in job_title or "developer" in job_title:
-        return (
-            "Which department or team will this role be part of? "
-            "For example: Engineering, Product Development, DevOps, etc."
-        )
-    elif "marketing" in job_title:
-        return (
-            "Which department will this role be in? "
-            "For example: Digital Marketing, Content Marketing, Growth, etc."
-        )
-    elif "sales" in job_title:
-        return (
-            "Which sales team or department? "
-            "For example: Inside Sales, Enterprise Sales, Business Development, etc."
-        )
-    else:
-        return "Which department or team will this role be part of?"
-
-
-def _get_location_question(job_data: Dict[str, Any]) -> str:
-    """Generate contextual location question."""
-    return (
-        "What are the location requirements for this position?\n"
-        "• On-site (please specify city/state)\n"
-        "• Fully remote\n"
-        "• Hybrid (mix of remote and office)\n\n"
-        "If location-specific, please include the city and state."
-    )
-
-
-def _get_experience_question(job_data: Dict[str, Any]) -> str:
-    """Generate contextual experience question."""
-    job_title = job_data.get("job_title", "").lower()
-    
-    if "senior" in job_title:
-        return (
-            "What experience requirements do you have for this senior role? "
-            "Please include:\n"
-            "• Years of experience needed\n"
-            "• Specific industry experience\n"
-            "• Leadership or management experience requirements"
-        )
-    elif "junior" in job_title or "entry" in job_title:
-        return (
-            "What experience requirements do you have? Since this appears to be "
-            "an entry-level role, please specify:\n"
-            "• Minimum years of experience (if any)\n"
-            "• Internship or project experience\n"
-            "• Any specific background needed"
-        )
-    else:
-        return (
-            "What experience requirements do you have for this role? "
-            "Please specify:\n"
-            "• Years of experience needed\n"
-            "• Specific industry or domain experience\n"
-            "• Any leadership or specialized experience"
-        )
-
-
-def _get_skills_question(job_data: Dict[str, Any]) -> str:
-    """Generate contextual skills question."""
-    job_title = job_data.get("job_title", "").lower()
-    
-    if any(tech_word in job_title for tech_word in ["engineer", "developer", "programmer", "analyst"]):
-        return (
-            "What technical skills and competencies are required? Please include:\n"
-            "• Programming languages (e.g., Python, JavaScript, Java)\n"
-            "• Frameworks and tools (e.g., React, Django, AWS)\n"
-            "• Soft skills (e.g., communication, problem-solving)\n"
-            "• Any certifications or specializations"
-        )
-    elif "marketing" in job_title:
-        return (
-            "What skills and competencies are required? Please include:\n"
-            "• Marketing tools and platforms\n"
-            "• Analytical and creative skills\n"
-            "• Communication and presentation abilities\n"
-            "• Any specific marketing certifications"
-        )
-    elif "sales" in job_title:
-        return (
-            "What skills and competencies are required? Please include:\n"
-            "• Sales methodologies and techniques\n"
-            "• CRM and sales tools experience\n"
-            "• Communication and negotiation skills\n"
-            "• Industry knowledge requirements"
-        )
-    else:
-        return (
-            "What skills and competencies are required for this role? "
-            "Please include both technical skills (tools, software, methods) "
-            "and soft skills (communication, leadership, etc.)"
-        )
-
-
-def _generate_retry_question(
+def generate_dynamic_question(
     field_name: str, 
-    validation_errors: List[str], 
-    retry_count: int
+    state: GraphState,
+    retry_count: int = 0
 ) -> str:
-    """Generate retry question when validation fails.
-    
-    Args:
-        field_name: Field that failed validation
-        validation_errors: List of validation error messages
-        retry_count: Current retry attempt number
+    """Generate question dynamically using LLM based on context."""
+    try:
+        processed_data = state.get("processed_data", {})
+        raw_responses = state.get("raw_responses", {})
+        clarification_needed = state.get("clarification_needed", [])
         
-    Returns:
-        Retry question with helpful guidance
-    """
-    error_context = " ".join(validation_errors[:2])  # Show first 2 errors
-    
-    base_messages = {
-        "job_title": (
-            f"I need a bit more information about the job title. {error_context} "
-            "Please provide a clear job title (e.g., 'Software Engineer', 'Marketing Manager')."
-        ),
+        # Build context for question generation
+        context_summary = _build_context_summary(processed_data)
         
-        "responsibilities": (
-            f"Let me get more details about the responsibilities. {error_context} "
-            "Please provide a more detailed description of the key duties and tasks."
-        ),
+        # Check if this is a clarification request
+        if field_name in clarification_needed and field_name in raw_responses:
+            return generate_clarification_question_for_field(
+                field_name, 
+                raw_responses[field_name], 
+                state
+            )
         
-        "skills": (
-            f"I'd like to better understand the skill requirements. {error_context} "
-            "Please provide more specific information about required skills and competencies."
-        ),
+        # Generate initial question for field
+        # Get recent conversation for better context
+        recent_messages = state.get("messages", [])[-4:]  # Last 4 messages for context
+        conversation_context = ""
+        if recent_messages:
+            conversation_context = "\\n".join([
+                f"{msg.get('role', 'unknown')}: {msg.get('content', '')}" 
+                for msg in recent_messages
+            ])
         
-        "experience": (
-            f"Let me clarify the experience requirements. {error_context} "
-            "Please provide more details about the background and experience needed."
-        )
-    }
-    
-    base_message = base_messages.get(
-        field_name, 
-        f"Let me get more information about {field_name}. {error_context}"
-    )
-    
-    if retry_count >= 2:
-        return (
-            f"{base_message}\n\n"
-            "If you're not sure about this field, we can skip it for now and "
-            "come back to it later. Just say 'skip' or 'not sure'."
-        )
-    
-    return base_message
+        # Check if we should acknowledge previous information
+        acknowledgment = _generate_acknowledgment(processed_data, field_name)
+        
+        # Check if this is a follow-up or first question for this field
+        is_clarification = field_name in state.get("clarification_needed", [])
+        raw_response = state.get("raw_responses", {}).get(field_name, "")
+        
+        if is_clarification and raw_response:
+            # Generate clarification question
+            question_prompt = f"""The candidate said "{raw_response}" when asked about their {field_name.replace('_', ' ')}.
+
+This needs clarification. Generate a friendly, specific follow-up question that:
+1. Acknowledges what they said
+2. Asks for the specific detail you need
+3. Keeps it conversational and under 20 words
+
+Examples:
+- "You mentioned 'some experience' - how many years would you say?"
+- "You said 'tech stuff' - what specific technologies do you work with?"
+- "You mentioned 'local area' - which city or region?"
+
+Generate clarification question:"""
+        else:
+            # Generate initial question with context
+            question_prompt = f"""You are a friendly recruiter having a natural conversation.
+
+WHAT YOU KNOW ABOUT THEM:
+{context_summary}
+
+{acknowledgment}
+
+TASK: Ask about their {field_name.replace('_', ' ')} naturally.
+
+REQUIREMENTS:
+1. Sound like a real person, not a robot
+2. Build on what you already know
+3. Keep it under 20 words
+4. Be specific about what you want to know
+
+QUESTION STYLES BY FIELD:
+- job_title: "What's your current role?" or "What do you do for work?"
+- experience: "How many years of experience do you have?"
+- skills: "What technologies do you work with day-to-day?"
+- responsibilities: "What does a typical day look like for you?"
+- location: "Where are you based?" or "Are you looking for remote work?"
+- department: "Which team or department do you work in?"
+- education: "What's your educational background?"
+
+Generate a natural question about their {field_name.replace('_', ' ')}:"""
+
+        if hasattr(st, 'session_state') and 'groq_client' in st.session_state:
+            logger.info(f"🔄 Calling Groq API for {field_name} question generation")
+            completion = st.session_state.groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": question_prompt}],
+                model=settings.llm_model,
+                max_tokens=60,
+                temperature=0.4
+            )
+            
+            generated_question = completion.choices[0].message.content.strip()
+            logger.info(f"✅ LLM Generated question for {field_name}: '{generated_question}'")
+            return generated_question
+        else:
+            # Very minimal fallback
+            logger.warning(f"⚠️ Using hardcoded fallback question for {field_name} - LLM client not available")
+            return _get_minimal_fallback_question(field_name)
+            
+    except Exception as e:
+        logger.error(f"Error generating question for {field_name}: {e}")
+        return _get_minimal_fallback_question(field_name)
 
 
-def get_field_examples(field_name: str) -> List[str]:
-    """Get example responses for a specific field.
+def generate_clarification_question_for_field(
+    field_name: str,
+    original_response: str, 
+    state: GraphState
+) -> str:
+    """Generate clarification question when user response was unclear."""
+    try:
+        clarification_prompt = f"""The candidate said "{original_response}" when I asked about their {field_name.replace('_', ' ')}.
+
+Generate a natural clarification question that:
+1. References what they said
+2. Asks for specific details about their {field_name.replace('_', ' ')}
+3. Keep it conversational and under 20 words
+
+Examples:
+- "You mentioned 'some remote work' - is your current role fully remote, hybrid, or office-based?"
+- "You said 'a few years' - could you share how many years of experience you have?"
+- "You mentioned 'tech work' - what specific technologies do you work with?"
+
+Generate clarification for their {field_name.replace('_', ' ')}:"""
+
+        if hasattr(st, 'session_state') and 'groq_client' in st.session_state:
+            completion = st.session_state.groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": clarification_prompt}],
+                model=settings.llm_model,
+                max_tokens=50,
+                temperature=0.3
+            )
+            
+            return completion.choices[0].message.content.strip()
+        else:
+            return f"You mentioned '{original_response}' - could you clarify the {field_name.replace('_', ' ')}?"
+            
+    except Exception as e:
+        logger.error(f"Error generating clarification: {e}")
+        return f"Could you clarify your response about {field_name.replace('_', ' ')}?"
+
+
+def _build_context_summary(processed_data: dict) -> str:
+    """Build summary of collected data for context."""
+    if not processed_data:
+        return "Nothing collected yet"
     
-    Args:
-        field_name: Field to get examples for
-        
-    Returns:
-        List of example responses
-    """
-    examples = {
-        "job_title": [
-            "Senior Software Engineer",
-            "Marketing Manager", 
-            "Sales Representative",
-            "Data Scientist",
-            "Product Manager"
-        ],
-        
-        "department": [
-            "Engineering",
-            "Marketing",
-            "Sales",
-            "Product",
-            "Operations"
-        ],
-        
-        "responsibilities": [
-            "Design and develop web applications",
-            "Manage marketing campaigns and analyze performance",
-            "Build relationships with prospective clients",
-            "Analyze data to drive business decisions"
-        ],
-        
-        "skills": [
-            "Python, React, PostgreSQL, problem-solving",
-            "Google Analytics, content creation, project management",
-            "CRM software, negotiation, relationship building",
-            "SQL, Python, statistical analysis, data visualization"
-        ]
-    }
+    # Prioritize showing key context fields
+    key_fields = ["job_title", "department", "employment_type"]
+    context_items = []
     
-    return examples.get(field_name, [])
+    for field in key_fields:
+        if field in processed_data:
+            value = processed_data[field]
+            display_name = field.replace('_', ' ').title()
+            context_items.append(f"{display_name}: {value}")
+    
+    # Add count of other fields
+    other_fields = len([f for f in processed_data.keys() if f not in key_fields])
+    if other_fields > 0:
+        context_items.append(f"+ {other_fields} other fields")
+    
+    return "; ".join(context_items) if context_items else "Basic info"
+
+
+def _generate_acknowledgment(processed_data: dict, field_name: str) -> str:
+    """Generate natural acknowledgment of recently collected information."""
+    # Get the most recent field that was collected
+    important_fields = ["name", "job_title", "experience", "skills"]
+    recent_field = None
+    recent_value = None
+    
+    for field in important_fields:
+        if field in processed_data and field != field_name:
+            recent_field = field
+            recent_value = processed_data[field]
+            break
+    
+    if recent_field and recent_value:
+        if recent_field == "name":
+            return f"CONTEXT: Their name is {recent_value}. Be personable."
+        elif recent_field == "job_title":
+            return f"CONTEXT: They're a {recent_value}. Reference this naturally."
+        elif recent_field == "experience":
+            return f"CONTEXT: They have {recent_value} experience. Build on this."
+        elif recent_field == "skills":
+            return f"CONTEXT: They mentioned {recent_value}. Acknowledge briefly."
+    
+    return ""
+
+
+def _get_minimal_fallback_question(field_name: str) -> str:
+    """Ultra-minimal fallback for when LLM fails."""
+    field_display = field_name.replace('_', ' ')
+    return f"What about the {field_display}?"
 
 
 def should_provide_examples(field_name: str, retry_count: int) -> bool:
-    """Determine if examples should be provided with question.
+    """Determine if examples should be provided with question."""
+    # Provide examples on retry or for complex fields
+    complex_fields = {"responsibilities", "skills", "experience"}
+    return retry_count > 0 or field_name in complex_fields
+
+
+def get_field_context_hints(field_name: str, state: GraphState) -> str:
+    """Get contextual hints for field based on already collected data."""
+    processed_data = state.get("processed_data", {})
+    job_title = processed_data.get("job_title", "").lower()
+    
+    # Provide context-aware hints
+    if field_name == "skills" and "engineer" in job_title:
+        return " (programming languages, frameworks, tools)"
+    elif field_name == "skills" and "marketing" in job_title:
+        return " (marketing tools, analytics, creative skills)"
+    elif field_name == "experience" and "senior" in job_title:
+        return " (including leadership experience)"
+    elif field_name == "location" and "remote" in str(processed_data.get("employment_type", "")):
+        return " (fully remote, hybrid, or specific location)"
+    
+    return ""
+
+
+def adapt_question_to_job_type(field_name: str, state: GraphState) -> Optional[str]:
+    """Adapt question based on job type context."""
+    processed_data = state.get("processed_data", {})
+    job_title = processed_data.get("job_title", "").lower()
+    
+    # Job-specific adaptations could be added here
+    # For now, return None to use default generation
+    return None
+
+
+def question_generator_node(state: GraphState) -> Dict[str, Any]:
+    """Generate question as a proper graph node.
+    
+    This is the missing node function that wraps question generation
+    for use in the LangGraph flow.
     
     Args:
-        field_name: Current field being collected
-        retry_count: Number of retry attempts
+        state: Current graph state
         
     Returns:
-        True if examples should be included
+        State updates with generated question message
     """
-    # Provide examples on first attempt for complex fields
-    complex_fields = {"responsibilities", "skills", "experience"}
-    if field_name in complex_fields and retry_count == 0:
-        return True
+    current_field = state.get("current_field")
+    retry_count = state.get("retry_count", 0)
     
-    # Always provide examples on retry
-    return retry_count > 0
+    if not current_field:
+        return state
+    
+    # Generate question for current field
+    question_text = generate_dynamic_question(current_field, state, retry_count)
+    
+    # Create question message
+    question_message = {
+        "role": "assistant",
+        "content": question_text,
+        "message_type": "question",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    # Add message to state
+    new_messages = state.get("messages", []) + [question_message]
+    
+    return {
+        **state,
+        "messages": new_messages
+    }
+
+
+def is_ready_for_jd_generation(state: GraphState) -> bool:
+    """Check if we have sufficient data for JD generation."""
+    required_fields = {"job_title", "responsibilities", "skills"}
+    collected_fields = set(state.get("processed_data", {}).keys())
+    
+    return required_fields.issubset(collected_fields)

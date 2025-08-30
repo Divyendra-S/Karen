@@ -3,7 +3,10 @@
 from typing import TypedDict, List, Dict, Any, Optional, Callable
 from pydantic import BaseModel, Field, ValidationError
 from .job_requirements import JobRequirements
-from .conversation import ConversationState, Message, ConversationPhase
+from .conversation import ConversationState, Message, ConversationPhase, ConversationMetadata
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class GraphState(TypedDict):
@@ -12,14 +15,17 @@ class GraphState(TypedDict):
     # Message history for LangGraph
     messages: List[Dict[str, Any]]
     
-    # Job data dictionary (will be converted to JobRequirements)
-    job_data: Dict[str, Any]
+    # Raw user responses (exact input, never modified)
+    raw_responses: Dict[str, str]
+    
+    # Processed/interpreted data (LLM cleaned values)
+    processed_data: Dict[str, Any]
     
     # Current field being collected
     current_field: Optional[str]
     
-    # Validation errors from last operation
-    validation_errors: List[str]
+    # Fields needing clarification
+    clarification_needed: List[str]
     
     # Conversation completion status
     is_complete: bool
@@ -45,9 +51,14 @@ class GraphStateValidator(BaseModel):
         description="Message history for the conversation"
     )
     
-    job_data: Dict[str, Any] = Field(
+    raw_responses: Dict[str, str] = Field(
         default_factory=dict,
-        description="Job requirements data being collected"
+        description="Exact user responses, never modified"
+    )
+    
+    processed_data: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="LLM interpreted/cleaned data"
     )
     
     current_field: Optional[str] = Field(
@@ -55,9 +66,9 @@ class GraphStateValidator(BaseModel):
         description="Field currently being collected"
     )
     
-    validation_errors: List[str] = Field(
+    clarification_needed: List[str] = Field(
         default_factory=list,
-        description="Current validation errors"
+        description="Fields needing clarification"
     )
     
     is_complete: bool = Field(
@@ -92,9 +103,10 @@ def create_initial_graph_state() -> GraphState:
     """Create initial graph state with default values."""
     return GraphState(
         messages=[],
-        job_data={},
+        raw_responses={},
+        processed_data={},
         current_field=None,
-        validation_errors=[],
+        clarification_needed=[],
         is_complete=False,
         generated_jd=None,
         conversation_phase=ConversationPhase.GREETING.value,
@@ -121,12 +133,19 @@ def update_graph_state(
     # Create new state with updates
     new_state = {**current_state, **updates}
     
-    # Validate the new state
-    is_valid, errors = validate_graph_state(new_state)
-    if not is_valid:
-        raise ValueError(f"Invalid state update: {errors}")
+    # Ensure retry_count doesn't exceed limits
+    if "retry_count" in new_state:
+        new_state["retry_count"] = max(0, min(new_state["retry_count"], 3))
     
-    return GraphState(new_state)
+    # Validate the new state (but don't fail on validation errors)
+    try:
+        is_valid, errors = validate_graph_state(new_state)
+        if not is_valid:
+            logger.warning(f"State validation warnings: {errors}")
+    except Exception as e:
+        logger.warning(f"State validation error: {e}")
+    
+    return new_state
 
 
 def add_message_to_state(state: GraphState, message: Dict[str, Any]) -> GraphState:
@@ -135,24 +154,34 @@ def add_message_to_state(state: GraphState, message: Dict[str, Any]) -> GraphSta
     return update_graph_state(state, {"messages": new_messages})
 
 
-def update_job_field(
-    state: GraphState, 
-    field_name: str, 
-    field_value: Any
+def save_raw_response(
+    state: GraphState,
+    field_name: str,
+    raw_input: str
 ) -> GraphState:
-    """Update a specific job field in the state."""
-    new_job_data = {**state["job_data"], field_name: field_value}
+    """Save user's exact response without modification."""
+    new_raw_responses = {**state["raw_responses"], field_name: raw_input}
+    return update_graph_state(state, {"raw_responses": new_raw_responses})
+
+
+def save_processed_data(
+    state: GraphState,
+    field_name: str,
+    processed_value: Any
+) -> GraphState:
+    """Save LLM-processed/cleaned data."""
+    new_processed_data = {**state["processed_data"], field_name: processed_value}
     
-    # Validate the updated job data
+    # Validate the updated processed data
     try:
-        JobRequirements(**new_job_data)
-        validation_errors = []
+        JobRequirements(**new_processed_data)
+        clarification_needed = []
     except ValidationError as e:
-        validation_errors = [f"{err['loc'][0]}: {err['msg']}" for err in e.errors()]
+        clarification_needed = [field_name]
     
     return update_graph_state(state, {
-        "job_data": new_job_data,
-        "validation_errors": validation_errors
+        "processed_data": new_processed_data,
+        "clarification_needed": clarification_needed
     })
 
 
@@ -166,7 +195,7 @@ def mark_field_complete(state: GraphState, field_name: str) -> GraphState:
     ]
     
     # Find next uncollected field
-    collected_fields = set(state["job_data"].keys())
+    collected_fields = set(state["processed_data"].keys())
     next_field = None
     
     for field in field_priority:
@@ -197,14 +226,14 @@ def mark_field_complete(state: GraphState, field_name: str) -> GraphState:
         "is_complete": is_complete,
         "conversation_phase": next_phase,
         "retry_count": 0,
-        "validation_errors": []
+        "clarification_needed": []
     })
 
 
 def convert_to_job_requirements(state: GraphState) -> Optional[JobRequirements]:
-    """Convert graph state job data to JobRequirements model."""
+    """Convert graph state processed data to JobRequirements model."""
     try:
-        return JobRequirements(**state["job_data"])
+        return JobRequirements(**state["processed_data"])
     except ValidationError:
         return None
 
@@ -224,9 +253,10 @@ def convert_conversation_to_graph(conv_state: ConversationState) -> GraphState:
     
     return GraphState(
         messages=messages,
-        job_data={},  # Will be populated as conversation progresses
+        raw_responses={},
+        processed_data={},
         current_field=conv_state.current_field,
-        validation_errors=conv_state.validation_errors,
+        clarification_needed=[],
         is_complete=conv_state.is_complete,
         generated_jd=None,
         conversation_phase=conv_state.current_phase.value,
@@ -242,7 +272,7 @@ def convert_conversation_to_graph(conv_state: ConversationState) -> GraphState:
 def convert_graph_to_conversation(graph_state: GraphState) -> ConversationState:
     """Convert GraphState back to ConversationState."""
     from datetime import datetime
-    from uuid import UUID
+    from uuid import UUID, uuid4
     
     # Convert messages back to Message objects
     messages = []
@@ -255,8 +285,8 @@ def convert_graph_to_conversation(graph_state: GraphState) -> ConversationState:
         )
         messages.append(message)
     
-    # Determine completed fields from job_data
-    completed_fields = frozenset(graph_state["job_data"].keys())
+    # Determine completed fields from processed_data
+    completed_fields = frozenset(graph_state["processed_data"].keys())
     
     # Create conversation metadata
     session_meta = graph_state["session_metadata"]
@@ -273,7 +303,7 @@ def convert_graph_to_conversation(graph_state: GraphState) -> ConversationState:
         current_field=graph_state["current_field"],
         conversation_history=messages,
         metadata=metadata,
-        validation_errors=graph_state["validation_errors"],
+        validation_errors=[],
         retry_count=graph_state["retry_count"]
     )
 

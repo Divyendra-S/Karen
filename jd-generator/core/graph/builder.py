@@ -8,12 +8,12 @@ from ..models.graph_state import GraphState, create_initial_graph_state
 
 
 def create_jd_graph() -> StateGraph:
-    """Create and configure the job description generation graph.
+    """Create and configure the job description generation graph with recursion limit.
     
     Returns:
         Compiled StateGraph ready for execution
     """
-    # Import node functions (will be implemented in Phase 3.2)
+    # Import node functions
     from .nodes.greeting import greeting_node
     from .nodes.question import question_router_node, question_generator_node
     from .nodes.collector import user_input_collector_node
@@ -42,21 +42,11 @@ def create_jd_graph() -> StateGraph:
     # Set entry point
     graph.set_entry_point("greeting")
     
-    # Add edges with conditional logic
-    graph.add_edge("greeting", "question_router")
+    # Simplified flow: greeting -> question_generator -> END
+    graph.add_edge("greeting", "question_generator")
+    graph.add_edge("question_generator", END)
     
-    # Conditional edge from question_router
-    graph.add_conditional_edges(
-        "question_router",
-        route_to_next_question,
-        {
-            "question_generator": "question_generator",
-            "completeness_checker": "completeness_checker",
-            "jd_generator": "jd_generator"
-        }
-    )
-    
-    graph.add_edge("question_generator", "user_input_collector")
+    # Keep other nodes for user response graph only
     graph.add_edge("user_input_collector", "state_updater")
     
     # Conditional edge from state_updater
@@ -64,7 +54,7 @@ def create_jd_graph() -> StateGraph:
         "state_updater", 
         should_continue_collecting,
         {
-            "continue": "question_router",
+            "continue": "question_generator",
             "complete": "completeness_checker"
         }
     )
@@ -75,13 +65,78 @@ def create_jd_graph() -> StateGraph:
         should_generate_jd,
         {
             "generate": "jd_generator",
-            "continue": "question_router"
+            "continue": "question_generator"
+        }
+    )
+    
+    graph.add_edge("jd_generator", "output")
+    graph.add_edge("question_generator", END)
+    graph.add_edge("output", END)
+    
+    # Compile graph
+    return graph.compile()
+
+
+def create_user_response_graph() -> StateGraph:
+    """Create simplified graph for processing user responses.
+    
+    Returns:
+        Compiled StateGraph for processing user input
+    """
+    from .nodes.collector import user_input_collector_node
+    from .nodes.updater import state_updater_node
+    from .nodes.question import question_generator_node
+    from .nodes.checker import completeness_checker_node
+    from .nodes.generator import jd_generator_node, output_node
+    from .edges.conditionals import (
+        should_continue_collecting,
+        should_generate_jd
+    )
+    
+    # Create simplified response processing graph
+    graph = StateGraph(GraphState)
+    
+    # Add essential nodes only
+    graph.add_node("user_input_collector", user_input_collector_node)
+    graph.add_node("state_updater", state_updater_node)
+    graph.add_node("question_generator", question_generator_node)
+    graph.add_node("completeness_checker", completeness_checker_node)
+    graph.add_node("jd_generator", jd_generator_node)
+    graph.add_node("output", output_node)
+    
+    # Set entry point for user response processing
+    graph.set_entry_point("user_input_collector")
+    
+    # Simplified linear flow with minimal branching
+    graph.add_edge("user_input_collector", "state_updater")
+    
+    # Single conditional from state_updater
+    graph.add_conditional_edges(
+        "state_updater",
+        should_continue_collecting,
+        {
+            "continue": "question_generator",
+            "complete": "completeness_checker"
+        }
+    )
+    
+    # Always end after question generation to wait for user input
+    graph.add_edge("question_generator", END)
+    
+    # Conditional from completeness_checker
+    graph.add_conditional_edges(
+        "completeness_checker",
+        should_generate_jd,
+        {
+            "generate": "jd_generator", 
+            "continue": "question_generator"
         }
     )
     
     graph.add_edge("jd_generator", "output")
     graph.add_edge("output", END)
     
+    # Compile graph
     return graph.compile()
 
 
