@@ -18,16 +18,7 @@ def greeting_node(state: GraphState) -> Dict[str, Any]:
         State updates dictionary with greeting message and phase change
     """
     greeting_message = (
-        "Hello! I'm an HR interviewer and I'm here to learn about your background "
-        "and career preferences so I can help create a job description that matches "
-        "what you're looking for.\n\n"
-        "This interview will take about 5-10 minutes and I'll ask you about:\n"
-        "• Your ideal job title and department\n"
-        "• Your experience and skills\n"
-        "• Types of responsibilities you enjoy\n"
-        "• Your preferred work environment\n"
-        "• Compensation and benefits that matter to you\n\n"
-        "Let's start! Could you tell me a bit about yourself and what kind of role you're interested in?"
+        "Hi! I'm here to help you create a job description. What's the job title for this position?"
     )
 
     # Create new message for state
@@ -44,7 +35,7 @@ def greeting_node(state: GraphState) -> Dict[str, Any]:
     return {
         **state,
         "messages": new_messages,
-        "current_field": "background_intro",
+        "current_field": "job_title",
         "conversation_phase": "collecting_basic_info",
     }
 
