@@ -726,6 +726,91 @@ def extract_with_llm(user_input: str, field_name: str, groq_client) -> Dict[str,
         return None
 
 
+def generate_professional_job_description(job_data: Dict[str, Any], groq_client) -> str:
+    """Generate a professional job description using LLM based on collected data."""
+    
+    # Create structured prompt for JD generation
+    jd_prompt = f"""Create a professional job description based on this information:
+
+JOB DATA:
+{json.dumps(job_data, indent=2)}
+
+FORMAT: Generate a complete, professional job description following standard HR format:
+
+**[JOB TITLE]**
+[Company Name - leave placeholder]
+
+**About the Role:**
+[2-3 sentences describing the position and its impact]
+
+**Key Responsibilities:**
+• [Responsibility 1]
+• [Responsibility 2] 
+• [Responsibility 3]
+[Add more as needed from data]
+
+**Required Qualifications:**
+• [Education requirement]
+• [Experience requirement]
+• [Required skills]
+[Add more from data]
+
+**Preferred Qualifications:**
+• [Preferred skills and experience]
+• [Nice-to-have qualifications]
+
+**What We Offer:**
+• [Compensation range if provided]
+• [Benefits if provided]
+• [Work arrangement details]
+
+**Application Instructions:**
+[Standard application process text]
+
+GUIDELINES:
+- Use professional, engaging language
+- Be specific about requirements
+- Include all collected information naturally
+- Make it compelling for candidates
+- Follow standard job posting format
+- Use bullet points for readability
+- Keep sections well-organized
+
+Generate a complete, ready-to-post job description now:"""
+
+    try:
+        jd_generation_request = [
+            {"role": "system", "content": "You are an expert HR professional who writes compelling, professional job descriptions. Create a complete, well-formatted job posting that attracts qualified candidates."},
+            {"role": "user", "content": jd_prompt}
+        ]
+        
+        completion = groq_client.chat.completions.create(
+            messages=jd_generation_request,
+            model=settings.llm_model,
+            max_tokens=1500,  # Longer for complete JD
+            temperature=0.3,  # Slightly creative but professional
+        )
+        
+        generated_jd = completion.choices[0].message.content.strip()
+        logger.info(f"Generated JD length: {len(generated_jd)} characters")
+        return generated_jd
+        
+    except Exception as e:
+        logger.error(f"JD generation error: {e}")
+        return f"Error generating job description: {e}"
+
+
+def check_if_interview_complete(job_data: Dict[str, Any]) -> bool:
+    """Check if enough information has been collected to generate a JD."""
+    required_fields = ['job_title', 'department', 'experience', 'employment_type', 'location']
+    
+    for field in required_fields:
+        if not is_field_complete(field, job_data):
+            return False
+    
+    return True
+
+
 def display_conversation():
     """Display the conversation history."""
     messages = st.session_state.conversation_state.get("messages", [])
@@ -988,13 +1073,38 @@ def main():
 
         # Export section
         st.header("Your Job Description")
-        if st.button("Preview Your JD", use_container_width=True):
-            st.info(
-                "Your personalized job description will appear here once the interview is complete..."
-            )
-
-        if st.button("Download Your JD", use_container_width=True, type="secondary"):
-            st.info("Download feature coming soon...")
+        
+        # Check if interview is complete enough to generate JD
+        if check_if_interview_complete(job_data):
+            if st.button("Generate Professional JD", use_container_width=True, type="primary"):
+                with st.spinner("🚀 Generating professional job description..."):
+                    generated_jd = generate_professional_job_description(job_data, st.session_state.groq_client)
+                    st.session_state.generated_jd = generated_jd
+                    st.rerun()
+            
+            # Show generated JD if available
+            if st.session_state.get("generated_jd"):
+                st.subheader("Generated Job Description")
+                st.markdown(st.session_state.generated_jd)
+                
+                # Download button for generated JD
+                if st.download_button(
+                    label="📄 Download JD as Text",
+                    data=st.session_state.generated_jd,
+                    file_name=f"job_description_{job_data.get('job_title', {}).get('title', 'position').lower().replace(' ', '_')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                ):
+                    st.success("Job description downloaded!")
+        else:
+            st.info("Complete the interview to generate your professional job description...")
+            missing_fields = []
+            required_fields = ['job_title', 'department', 'experience', 'employment_type', 'location']
+            for field in required_fields:
+                if not is_field_complete(field, job_data):
+                    missing_fields.append(field.replace('_', ' ').title())
+            if missing_fields:
+                st.caption(f"Still need: {', '.join(missing_fields)}")
 
     # Footer
     st.markdown("---")
