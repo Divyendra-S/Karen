@@ -10,6 +10,7 @@ langgraph>=0.0.26
 
 # Groq for LLM and Whisper
 groq==0.4.1
+httpx>=0.23.0,<0.28.0  # Compatible with groq 0.4.1
 
 # Web UI
 streamlit==1.30.0

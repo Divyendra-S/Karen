@@ -8,84 +8,104 @@ from .conversation import ConversationState, Message, ConversationPhase
 
 class GraphState(TypedDict):
     """LangGraph state schema using TypedDict for compatibility."""
-    
+
     # Message history for LangGraph
     messages: List[Dict[str, Any]]
-    
+
     # Job data dictionary (will be converted to JobRequirements)
     job_data: Dict[str, Any]
-    
+
     # Current field being collected
     current_field: Optional[str]
-    
+
     # Validation errors from last operation
     validation_errors: List[str]
-    
+
     # Conversation completion status
     is_complete: bool
-    
+
     # Generated job description
     generated_jd: Optional[str]
-    
+
     # Current conversation phase
     conversation_phase: str
-    
+
     # Retry count for current operation
     retry_count: int
-    
+
     # Session metadata
     session_metadata: Dict[str, Any]
+
+    # Evaluation results from LLM analysis
+    evaluation_result: Optional[Dict[str, Any]]
+
+    # Fields extracted from evaluation
+    extracted_fields: Dict[str, Any]
+
+    # Corrected user input from evaluation
+    corrected_input: Optional[str]
+
+    # Whether response needs clarification
+    needs_clarification: bool
+
+    # Evaluation failed flag
+    evaluation_failed: bool
 
 
 class GraphStateValidator(BaseModel):
     """Pydantic model for validating GraphState data."""
-    
+
     messages: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="Message history for the conversation"
+        default_factory=list, description="Message history for the conversation"
     )
-    
+
     job_data: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Job requirements data being collected"
+        default_factory=dict, description="Job requirements data being collected"
     )
-    
+
     current_field: Optional[str] = Field(
-        None,
-        description="Field currently being collected"
+        None, description="Field currently being collected"
     )
-    
+
     validation_errors: List[str] = Field(
-        default_factory=list,
-        description="Current validation errors"
+        default_factory=list, description="Current validation errors"
     )
-    
+
     is_complete: bool = Field(
-        False,
-        description="Whether job data collection is complete"
+        False, description="Whether job data collection is complete"
     )
-    
+
     generated_jd: Optional[str] = Field(
-        None,
-        description="Generated job description text"
+        None, description="Generated job description text"
     )
-    
+
     conversation_phase: str = Field(
-        ConversationPhase.GREETING.value,
-        description="Current conversation phase"
+        ConversationPhase.GREETING.value, description="Current conversation phase"
     )
-    
+
     retry_count: int = Field(
-        0,
-        ge=0,
-        le=3,
-        description="Number of retries for current operation"
+        0, ge=0, le=3, description="Number of retries for current operation"
     )
-    
+
     session_metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Session tracking metadata"
+        default_factory=dict, description="Session tracking metadata"
     )
+
+    evaluation_result: Optional[Dict[str, Any]] = Field(
+        None, description="LLM evaluation result"
+    )
+
+    extracted_fields: Dict[str, Any] = Field(
+        default_factory=dict, description="Fields extracted from evaluation"
+    )
+
+    corrected_input: Optional[str] = Field(None, description="Corrected user input")
+
+    needs_clarification: bool = Field(
+        False, description="Whether response needs clarification"
+    )
+
+    evaluation_failed: bool = Field(False, description="Whether evaluation failed")
 
 
 def create_initial_graph_state() -> GraphState:
@@ -99,7 +119,12 @@ def create_initial_graph_state() -> GraphState:
         generated_jd=None,
         conversation_phase=ConversationPhase.GREETING.value,
         retry_count=0,
-        session_metadata={}
+        session_metadata={},
+        evaluation_result=None,
+        extracted_fields={},
+        corrected_input=None,
+        needs_clarification=False,
+        evaluation_failed=False,
     )
 
 
@@ -114,18 +139,17 @@ def validate_graph_state(state: Dict[str, Any]) -> tuple[bool, List[str]]:
 
 
 def update_graph_state(
-    current_state: GraphState, 
-    updates: Dict[str, Any]
+    current_state: GraphState, updates: Dict[str, Any]
 ) -> GraphState:
     """Functionally update graph state with new values."""
     # Create new state with updates
     new_state = {**current_state, **updates}
-    
+
     # Validate the new state
     is_valid, errors = validate_graph_state(new_state)
     if not is_valid:
         raise ValueError(f"Invalid state update: {errors}")
-    
+
     return GraphState(new_state)
 
 
@@ -136,48 +160,53 @@ def add_message_to_state(state: GraphState, message: Dict[str, Any]) -> GraphSta
 
 
 def update_job_field(
-    state: GraphState, 
-    field_name: str, 
-    field_value: Any
+    state: GraphState, field_name: str, field_value: Any
 ) -> GraphState:
     """Update a specific job field in the state."""
     new_job_data = {**state["job_data"], field_name: field_value}
-    
+
     # Validate the updated job data
     try:
         JobRequirements(**new_job_data)
         validation_errors = []
     except ValidationError as e:
         validation_errors = [f"{err['loc'][0]}: {err['msg']}" for err in e.errors()]
-    
-    return update_graph_state(state, {
-        "job_data": new_job_data,
-        "validation_errors": validation_errors
-    })
+
+    return update_graph_state(
+        state, {"job_data": new_job_data, "validation_errors": validation_errors}
+    )
 
 
 def mark_field_complete(state: GraphState, field_name: str) -> GraphState:
     """Mark a field as complete and advance to next field."""
     # Get next field to collect
     field_priority = [
-        "job_title", "department", "employment_type", "location",
-        "experience", "responsibilities", "skills", "education",
-        "salary", "benefits", "additional_requirements"
+        "job_title",
+        "department",
+        "employment_type",
+        "location",
+        "experience",
+        "responsibilities",
+        "skills",
+        "education",
+        "salary",
+        "benefits",
+        "additional_requirements",
     ]
-    
+
     # Find next uncollected field
     collected_fields = set(state["job_data"].keys())
     next_field = None
-    
+
     for field in field_priority:
         if field not in collected_fields and field != field_name:
             next_field = field
             break
-    
+
     # Check if we have all required fields
     required_fields = {"job_title", "responsibilities", "skills"}
     is_complete = required_fields.issubset(collected_fields | {field_name})
-    
+
     # Determine next phase
     if is_complete:
         next_phase = ConversationPhase.REVIEWING_DATA.value
@@ -191,14 +220,17 @@ def mark_field_complete(state: GraphState, field_name: str) -> GraphState:
         next_phase = ConversationPhase.COLLECTING_RESPONSIBILITIES.value
     else:
         next_phase = ConversationPhase.COLLECTING_REQUIREMENTS.value
-    
-    return update_graph_state(state, {
-        "current_field": next_field,
-        "is_complete": is_complete,
-        "conversation_phase": next_phase,
-        "retry_count": 0,
-        "validation_errors": []
-    })
+
+    return update_graph_state(
+        state,
+        {
+            "current_field": next_field,
+            "is_complete": is_complete,
+            "conversation_phase": next_phase,
+            "retry_count": 0,
+            "validation_errors": [],
+        },
+    )
 
 
 def convert_to_job_requirements(state: GraphState) -> Optional[JobRequirements]:
@@ -217,11 +249,11 @@ def convert_conversation_to_graph(conv_state: ConversationState) -> GraphState:
             "role": msg.role.value,
             "content": msg.content,
             "timestamp": msg.timestamp.isoformat(),
-            "message_type": msg.message_type.value
+            "message_type": msg.message_type.value,
         }
         for msg in conv_state.conversation_history
     ]
-    
+
     return GraphState(
         messages=messages,
         job_data={},  # Will be populated as conversation progresses
@@ -234,8 +266,8 @@ def convert_conversation_to_graph(conv_state: ConversationState) -> GraphState:
         session_metadata={
             "session_id": str(conv_state.metadata.session_id),
             "started_at": conv_state.metadata.started_at.isoformat(),
-            "voice_enabled": conv_state.metadata.voice_enabled
-        }
+            "voice_enabled": conv_state.metadata.voice_enabled,
+        },
     )
 
 
@@ -243,7 +275,7 @@ def convert_graph_to_conversation(graph_state: GraphState) -> ConversationState:
     """Convert GraphState back to ConversationState."""
     from datetime import datetime
     from uuid import UUID
-    
+
     # Convert messages back to Message objects
     messages = []
     for msg_dict in graph_state["messages"]:
@@ -251,22 +283,26 @@ def convert_graph_to_conversation(graph_state: GraphState) -> ConversationState:
             role=msg_dict["role"],
             content=msg_dict["content"],
             message_type=msg_dict.get("message_type", "response"),
-            timestamp=datetime.fromisoformat(msg_dict.get("timestamp", datetime.utcnow().isoformat()))
+            timestamp=datetime.fromisoformat(
+                msg_dict.get("timestamp", datetime.utcnow().isoformat())
+            ),
         )
         messages.append(message)
-    
+
     # Determine completed fields from job_data
     completed_fields = frozenset(graph_state["job_data"].keys())
-    
+
     # Create conversation metadata
     session_meta = graph_state["session_metadata"]
     metadata = ConversationMetadata(
         session_id=UUID(session_meta.get("session_id", str(uuid4()))),
-        started_at=datetime.fromisoformat(session_meta.get("started_at", datetime.utcnow().isoformat())),
+        started_at=datetime.fromisoformat(
+            session_meta.get("started_at", datetime.utcnow().isoformat())
+        ),
         voice_enabled=session_meta.get("voice_enabled", False),
-        total_messages=len(messages)
+        total_messages=len(messages),
     )
-    
+
     return ConversationState(
         current_phase=ConversationPhase(graph_state["conversation_phase"]),
         completed_fields=completed_fields,
@@ -274,7 +310,7 @@ def convert_graph_to_conversation(graph_state: GraphState) -> ConversationState:
         conversation_history=messages,
         metadata=metadata,
         validation_errors=graph_state["validation_errors"],
-        retry_count=graph_state["retry_count"]
+        retry_count=graph_state["retry_count"],
     )
 
 

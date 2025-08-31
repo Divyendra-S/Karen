@@ -38,9 +38,11 @@ logger.add(
     compression="zip",
 )
 
+
 def get_logger(name: str):
     """Get a logger instance with the specified name."""
     return logger.bind(name=name)
+
 
 # Export the configured logger
 __all__ = ["logger", "get_logger"]

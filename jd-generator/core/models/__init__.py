@@ -16,7 +16,7 @@ from .job_requirements import (
     SalaryRange,
     create_default_job_requirements,
     validate_job_requirements,
-    merge_job_requirements
+    merge_job_requirements,
 )
 
 # Conversation models
@@ -30,7 +30,7 @@ from .conversation import (
     create_initial_conversation_state,
     create_greeting_message,
     is_conversation_stale,
-    get_next_pending_field
+    get_next_pending_field,
 )
 
 # Graph state models
@@ -45,13 +45,13 @@ from .graph_state import (
     mark_field_complete,
     convert_to_job_requirements,
     convert_conversation_to_graph,
-    convert_graph_to_conversation
+    convert_graph_to_conversation,
 )
 
 __all__ = [
     # Job requirements
     "JobRequirements",
-    "EmploymentType", 
+    "EmploymentType",
     "LocationRequirement",
     "LocationType",
     "ExperienceRequirement",
@@ -59,25 +59,23 @@ __all__ = [
     "SkillsRequirement",
     "Skill",
     "SkillType",
-    "EducationRequirement", 
+    "EducationRequirement",
     "EducationLevel",
     "SalaryRange",
     "create_default_job_requirements",
     "validate_job_requirements",
     "merge_job_requirements",
-    
     # Conversation
     "ConversationState",
     "Message",
     "MessageRole",
     "ConversationPhase",
-    "MessageType", 
+    "MessageType",
     "ConversationMetadata",
     "create_initial_conversation_state",
     "create_greeting_message",
     "is_conversation_stale",
     "get_next_pending_field",
-    
     # Graph state
     "GraphState",
     "GraphStateValidator",
@@ -89,5 +87,5 @@ __all__ = [
     "mark_field_complete",
     "convert_to_job_requirements",
     "convert_conversation_to_graph",
-    "convert_graph_to_conversation"
+    "convert_graph_to_conversation",
 ]
