@@ -9,15 +9,15 @@ langchain-groq>=0.1.0
 langgraph>=0.0.26
 
 # Groq for LLM and Whisper
-groq==0.4.1
-httpx>=0.23.0,<0.28.0  # Compatible with groq 0.4.1
+groq>=0.31.0
+httpx>=0.23.0,<0.28.0
 
 # Web UI
 streamlit==1.30.0
 streamlit-chat==0.1.1
 
 # Audio processing
-SpeechRecognition==3.10.1
+audio-recorder-streamlit==0.0.10
 pydub==0.25.1
 
 # Logging and utilities

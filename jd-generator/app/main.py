@@ -12,7 +12,8 @@ from app.config import settings
 from app.utils.logger import logger
 from core.models.graph_state import create_initial_graph_state
 from core.graph.nodes.greeting import greeting_node
-from core.services.llm_service import LLMService, EvaluationRequest
+from core.services.direct_speech_service import get_direct_speech_service
+from audio_recorder_streamlit import audio_recorder
 from groq import Groq
 
 
@@ -32,8 +33,8 @@ def initialize_session_state():
             st.error("Groq API key not configured. Please check your .env file.")
             st.stop()
     
-    if "llm_service" not in st.session_state:
-        st.session_state.llm_service = LLMService()
+    if "speech_service" not in st.session_state:
+        st.session_state.speech_service = get_direct_speech_service()
 
 
 def process_user_message(user_input: str):
@@ -53,15 +54,16 @@ def process_user_message(user_input: str):
     }
     st.session_state.conversation_state["messages"].append(user_message)
 
-    # FIRST: Use LLM evaluation to extract multiple fields from user response
-    evaluate_and_update_state(user_input, st.session_state.conversation_state)
+    # FIRST: Extract data and update state before AI response
+    extract_job_data(user_input, st.session_state.conversation_state)
+    add_field_validation_feedback(st.session_state.conversation_state)
+    update_current_field_after_extraction(st.session_state.conversation_state)
 
     # Show processing indicator
     with st.spinner("🤖 Thinking..."):
         try:
             # Create enhanced conversation context with UPDATED state
             job_data = st.session_state.conversation_state.get("job_data", {})
-            collected_fields = list(job_data.keys())
 
             # System prompt for humanized interview conversation
             system_prompt = f"""You are a friendly, empathetic HR interviewer having a genuine conversation with someone about their career dreams. Talk like a real person who cares about their success.
@@ -165,133 +167,380 @@ Be genuine, enthusiastic, and conversational. React to what they tell you like a
             st.error(f"Sorry, I encountered an error: {e}")
 
 
-def evaluate_and_update_state(user_input: str, state):
-    """Use LLM evaluation to extract multiple fields from user response."""
-    current_field = state.get("current_field")
-    job_data = state.get("job_data", {})
+def extract_job_data(user_input: str, state):
+    """Extract structured job data from user input based on current field."""
+    current_field = state.get('current_field')
+    input_text = user_input.strip()
     
-    # Skip evaluation if we're in greeting phase
+    # Initialize job_data if it doesn't exist
+    if 'job_data' not in state:
+        state['job_data'] = {}
+    
+    if not current_field or not input_text:
+        return
+    
+    # Log what we're extracting
+    logger.info(f"Extracting field '{current_field}' from input: '{input_text}'")
+    
+    # Extract data based on the specific field being collected
+    if current_field == 'background_intro':
+        state['job_data']['background_intro'] = input_text
+        logger.info(f"Stored background_intro: {input_text}")
+    
+    elif current_field == 'job_title':
+        # Clean and validate job title
+        cleaned_title = input_text.strip().title()
+        if len(cleaned_title) >= 3 and not any(char in cleaned_title for char in ['@', '#', '$', '%', '&']):
+            state['job_data']['job_title'] = cleaned_title
+            logger.info(f"Stored job_title: {cleaned_title}")
+        else:
+            logger.warning(f"Job title validation failed for: {cleaned_title}")
+    
+    elif current_field == 'department':
+        cleaned_dept = input_text.strip().title()
+        state['job_data']['department'] = cleaned_dept
+        logger.info(f"Stored department: {cleaned_dept}")
+    
+    elif current_field == 'employment_type':
+        # Map to standard employment types
+        input_lower = input_text.lower()
+        type_mapping = {
+            'full': 'full_time', 'permanent': 'full_time', 'full-time': 'full_time',
+            'part': 'part_time', 'part-time': 'part_time',
+            'contract': 'contract', 'contractor': 'contract', 'consulting': 'contract',
+            'intern': 'internship', 'internship': 'internship',
+            'temp': 'temporary', 'temporary': 'temporary',
+            'freelance': 'freelance', 'freelancer': 'freelance'
+        }
+        for key, value in type_mapping.items():
+            if key in input_lower:
+                state['job_data']['employment_type'] = value
+                logger.info(f"Stored employment_type: {value}")
+                break
+    
+    elif current_field == 'location':
+        # Parse location data
+        location_data = parse_location_from_input(input_text)
+        if location_data:
+            state['job_data']['location'] = location_data
+    
+    elif current_field == 'experience':
+        # Parse experience data
+        experience_data = parse_experience_from_input(input_text)
+        if experience_data:
+            state['job_data']['experience'] = experience_data
+    
+    elif current_field == 'responsibilities':
+        # Parse responsibilities list
+        responsibilities = parse_list_from_input(input_text)
+        if responsibilities:
+            state['job_data']['responsibilities'] = responsibilities
+    
+    elif current_field == 'skills':
+        # Parse skills object
+        skills_data = parse_skills_from_input(input_text)
+        if skills_data:
+            state['job_data']['skills'] = skills_data
+    
+    elif current_field == 'education':
+        # Parse education data
+        education_data = parse_education_from_input(input_text)
+        if education_data:
+            state['job_data']['education'] = education_data
+    
+    elif current_field == 'salary':
+        # Parse salary data
+        salary_data = parse_salary_from_input(input_text)
+        if salary_data:
+            state['job_data']['salary'] = salary_data
+    
+    elif current_field == 'benefits':
+        # Parse benefits list
+        benefits = parse_list_from_input(input_text)
+        if benefits:
+            state['job_data']['benefits'] = benefits
+    
+    elif current_field == 'additional_requirements':
+        if not any(word in input_text.lower() for word in ['none', 'nothing', 'skip']):
+            state['job_data']['additional_requirements'] = input_text
+
+
+def parse_location_from_input(input_text: str) -> dict:
+    """Parse location data from user input."""
+    import re
+    
+    input_lower = input_text.lower()
+    
+    # Determine location type
+    if any(word in input_lower for word in ["remote", "work from home", "wfh", "anywhere"]):
+        location_type = "remote"
+        city = None
+        state_val = None
+    elif any(word in input_lower for word in ["hybrid", "flexible", "mix"]):
+        location_type = "hybrid"
+        city, state_val = extract_city_state_from_text(input_text)
+    else:
+        location_type = "on_site"
+        city, state_val = extract_city_state_from_text(input_text)
+    
+    return {
+        "location_type": location_type,
+        "city": city,
+        "state": state_val,
+        "country": "United States"
+    }
+
+
+def parse_experience_from_input(input_text: str) -> dict:
+    """Parse experience data from user input."""
+    import re
+    
+    input_lower = input_text.lower()
+    
+    # Extract years
+    years_match = re.search(r'(\d+)(?:\+)?\s*(?:years?|yrs?)', input_lower)
+    years_min = int(years_match.group(1)) if years_match else 0
+    
+    # Determine level
+    if any(word in input_lower for word in ["entry", "new grad", "0-2", "graduate"]):
+        level = "entry"
+    elif any(word in input_lower for word in ["junior", "jr", "1-3"]):
+        level = "junior"
+    elif any(word in input_lower for word in ["senior", "sr", "lead", "5+"]):
+        level = "senior"
+    elif any(word in input_lower for word in ["principal", "staff", "architect", "10+"]):
+        level = "principal"
+    else:
+        level = "mid"
+    
+    # Check leadership
+    leadership_required = any(word in input_lower for word in ["leadership", "lead", "manage", "supervise"])
+    
+    # Extract industry
+    industries = ["fintech", "healthcare", "education", "e-commerce", "gaming", "automotive", "aerospace"]
+    industry_experience = ", ".join([ind for ind in industries if ind in input_lower])
+    
+    return {
+        "level": level,
+        "years_min": years_min,
+        "industry_experience": industry_experience or None,
+        "leadership_required": leadership_required
+    }
+
+
+def parse_skills_from_input(input_text: str) -> dict:
+    """Parse skills data from user input."""
+    import re
+    
+    # Split by categories or commas
+    skills_data = {
+        "technical_skills": [],
+        "soft_skills": [],
+        "programming_languages": [],
+        "frameworks_tools": [],
+        "certifications": []
+    }
+    
+    # Common skills for categorization
+    programming_languages = ["python", "javascript", "java", "c++", "c#", "go", "rust", "typescript", "php", "ruby", "sql"]
+    frameworks_tools = ["react", "angular", "vue", "django", "flask", "node.js", "spring", "aws", "azure", "docker", "kubernetes"]
+    soft_skills = ["communication", "leadership", "teamwork", "problem solving", "analytical", "creative", "time management"]
+    
+    # Parse by comma-separated items
+    items = [item.strip() for item in re.split(r'[,\n•\-\*]', input_text) if item.strip()]
+    
+    for item in items:
+        item_lower = item.lower()
+        
+        # Categorize skills
+        if any(lang in item_lower for lang in programming_languages):
+            skills_data["programming_languages"].append(item)
+        elif any(tool in item_lower for tool in frameworks_tools):
+            skills_data["frameworks_tools"].append(item)
+        elif any(soft in item_lower for soft in soft_skills):
+            skills_data["soft_skills"].append(item)
+        elif any(cert_word in item_lower for cert_word in ["certified", "certification", "aws", "google", "microsoft"]):
+            skills_data["certifications"].append(item)
+        else:
+            skills_data["technical_skills"].append(item)
+    
+    return skills_data
+
+
+def parse_education_from_input(input_text: str) -> dict:
+    """Parse education data from user input."""
+    input_lower = input_text.lower()
+    
+    # Map education level
+    if any(word in input_lower for word in ["phd", "doctorate", "doctoral"]):
+        level = "doctorate"
+    elif any(word in input_lower for word in ["master", "mba", "ms", "ma"]):
+        level = "master"
+    elif any(word in input_lower for word in ["bachelor", "ba", "bs", "degree"]):
+        level = "bachelor"
+    elif any(word in input_lower for word in ["associate", "aa", "as"]):
+        level = "associate"
+    elif any(word in input_lower for word in ["high school", "diploma", "ged"]):
+        level = "high_school"
+    else:
+        level = "bachelor"  # Default
+    
+    # Extract field of study
+    common_fields = ["computer science", "engineering", "business", "marketing", "finance", "mathematics"]
+    field_of_study = None
+    for field in common_fields:
+        if field in input_lower:
+            field_of_study = field.title()
+            break
+    
+    return {
+        "level": level,
+        "field_of_study": field_of_study,
+        "is_required": True
+    }
+
+
+def parse_salary_from_input(input_text: str) -> dict:
+    """Parse salary data from user input."""
+    import re
+    
+    if any(word in input_text.lower() for word in ["skip", "not specify", "competitive"]):
+        return None
+    
+    # Extract salary numbers
+    salary_pattern = r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)'
+    matches = re.findall(salary_pattern, input_text.replace(',', ''))
+    
+    if not matches:
+        return None
+    
+    amounts = [float(match.replace(',', '')) for match in matches]
+    
+    # Determine frequency
+    frequency = "annual"
+    if any(word in input_text.lower() for word in ["hour", "hourly", "/hr"]):
+        frequency = "hourly"
+    elif any(word in input_text.lower() for word in ["month", "monthly", "/mo"]):
+        frequency = "monthly"
+    
+    return {
+        "min_salary": min(amounts) if amounts else None,
+        "max_salary": max(amounts) if len(amounts) > 1 else None,
+        "currency": "USD",
+        "frequency": frequency,
+        "is_negotiable": "negotiable" in input_text.lower()
+    }
+
+
+def parse_list_from_input(input_text: str) -> list:
+    """Parse a list of items from user input."""
+    import re
+    
+    # Split by common separators
+    items = re.split(r'[,\n•\-\*;]', input_text)
+    
+    # Clean and filter items
+    cleaned_items = []
+    for item in items:
+        cleaned = re.sub(r'^\d+[\.\)]\s*', '', item.strip())
+        cleaned = cleaned.strip('•-* ')
+        if len(cleaned) > 2:
+            cleaned_items.append(cleaned)
+    
+    return cleaned_items
+
+
+def extract_city_state_from_text(text: str) -> tuple:
+    """Extract city and state from location text."""
+    import re
+    
+    # Pattern for "City, State" format
+    city_state_pattern = r'([A-Za-z\s]+),\s*([A-Za-z]{2,})'
+    match = re.search(city_state_pattern, text)
+    
+    if match:
+        return match.group(1).strip().title(), match.group(2).strip().title()
+    
+    # If no comma, treat whole text as city
+    city = text.strip().title()
+    return city if city else None, None
+
+
+def add_field_validation_feedback(state):
+    """Add validation feedback to help user provide better data."""
+    current_field = state.get('current_field')
+    job_data = state.get('job_data', {})
+    
     if not current_field:
         return
     
-    try:
-        # Create evaluation request
-        evaluation_request = EvaluationRequest(
-            user_input=user_input,
-            current_field=current_field,
-            job_data=job_data,
-            conversation_context=get_conversation_context(state)
-        )
-        
-        # Perform LLM evaluation
-        llm_service = st.session_state.llm_service
-        evaluation_result = llm_service.evaluate_user_response(evaluation_request)
-        
-        logger.info(f"Evaluation result: {evaluation_result}")
-        
-        # Update state based on evaluation
-        if evaluation_result.needs_clarification:
-            # Set clarification flag for next response
-            state["needs_clarification"] = True
-            state["validation_errors"] = ["Response needs clarification"]
-            logger.info("Response needs clarification")
-        else:
-            # Process extracted fields (even if there are validation issues)
-            extracted_count = 0
-            for field_name, field_value in evaluation_result.extracted_fields.items():
-                if field_value is not None and field_value != "" and field_value != []:
-                    state["job_data"][field_name] = field_value
-                    logger.info(f"Extracted and stored {field_name}: {field_value}")
-                    extracted_count += 1
-            
-            # Use corrected input if provided
-            if evaluation_result.corrected_input:
-                logger.info(f"Using corrected input: {evaluation_result.corrected_input}")
-            
-            # Log validation issues as warnings but don't block processing
-            if evaluation_result.validation_issues:
-                logger.info(f"Validation notes: {evaluation_result.validation_issues}")
-            
-            # Update current field based on what we've collected
-            update_current_field_after_evaluation(state)
-            
-            logger.info(f"Successfully extracted {extracted_count} fields from user response")
-            
-    except Exception as e:
-        logger.error(f"Evaluation failed: {e}")
-        # Fallback to basic extraction for current field only
-        extract_single_field(user_input, state, current_field)
-
-
-def get_conversation_context(state) -> list:
-    """Get conversation context for evaluation."""
-    messages = state.get("messages", [])
-    if len(messages) <= 2:
-        return []
+    # Clear previous validation feedback
+    state['validation_feedback'] = []
     
-    # Get last few messages for context
-    recent_messages = messages[-3:]
-    context_messages = []
-    for msg in recent_messages:
-        context_messages.append({
-            "role": msg.get("role", ""),
-            "content": msg.get("content", "")[:200]  # Truncate for context
-        })
+    # Check if current field needs validation feedback
+    if current_field == 'job_title':
+        if current_field in job_data:
+            title = job_data[current_field]
+            if len(title) < 3:
+                state.setdefault('validation_feedback', []).append(
+                    f"Job title seems too short. Please provide a more complete title."
+                )
     
-    return context_messages
+    elif current_field == 'location':
+        if current_field in job_data:
+            location_data = job_data[current_field]
+            if location_data.get('location_type') == 'on_site' and not location_data.get('city'):
+                state.setdefault('validation_feedback', []).append(
+                    f"For on-site work, please specify the city and state you prefer."
+                )
 
 
-def update_current_field_after_evaluation(state):
-    """Update current field based on evaluation results."""
-    job_data = state.get("job_data", {})
+def update_current_field_after_extraction(state):
+    """Update current field to next field after successful data extraction."""
+    current_field = state.get('current_field')
+    job_data = state.get('job_data', {})
     
-    # Define field priority order
-    field_priority = [
-        "background_intro",
-        "job_title", 
-        "department",
-        "employment_type",
-        "location",
-        "experience",
-        "responsibilities",
-        "skills",
-        "education",
-        "salary",
-        "benefits",
-        "additional_requirements",
+    # Define field order
+    field_order = [
+        'background_intro',
+        'job_title', 
+        'department',
+        'employment_type',
+        'location',
+        'experience',
+        'responsibilities',
+        'skills',
+        'education',
+        'salary',
+        'benefits',
+        'additional_requirements'
     ]
     
-    # Find the next field that needs to be collected
-    for field in field_priority:
-        if not is_field_complete(field, job_data):
-            state["current_field"] = field
-            logger.info(f"Next field to collect: {field}")
-            return
-    
-    # All fields complete
-    state["current_field"] = None
-    state["is_complete"] = True
-    logger.info("All fields completed after evaluation!")
-
-
-def extract_single_field(user_input: str, state, field_name: str):
-    """Fallback single field extraction for critical fields."""
-    logger.info(f"Using fallback extraction for field: {field_name}")
-    
-    if "job_data" not in state:
-        state["job_data"] = {}
-    
-    input_text = user_input.strip()
-    if not input_text:
+    # Find current field index
+    try:
+        current_index = field_order.index(current_field)
+    except ValueError:
+        logger.warning(f"Unknown field in update_current_field: {current_field}")
         return
     
-    # Simple fallback extraction for current field only
-    if field_name == "background_intro":
-        state["job_data"]["background_intro"] = input_text
-    elif field_name == "job_title":
-        cleaned_title = input_text.strip().title()
-        if len(cleaned_title) >= 3:
-            state["job_data"]["job_title"] = cleaned_title
+    # Check if current field is complete and move to next
+    if is_field_complete(current_field, job_data):
+        # Move to next field
+        next_index = current_index + 1
+        if next_index < len(field_order):
+            next_field = field_order[next_index]
+            state['current_field'] = next_field
+            logger.info(f"Moving to next field: {next_field}")
+        else:
+            # All fields completed
+            state['current_field'] = None
+            state['is_complete'] = True
+            logger.info("All fields completed!")
+    else:
+        # Stay on current field if not complete
+        logger.info(f"Staying on field {current_field} - not complete yet")
+
+
 
 
 def is_field_complete(field_name: str, job_data: dict) -> bool:
@@ -311,7 +560,7 @@ def is_field_complete(field_name: str, job_data: dict) -> bool:
             and field_value.get("location_type")
             and (
                 field_value.get("location_type") == "remote" or field_value.get("city")
-            
+            )
         )
 
     elif field_name == "experience":
@@ -364,7 +613,7 @@ def update_conversation_phase(state):
 
 
 def display_conversation():
-    """Display the conversation history with enhanced formatting."""
+    """Display the conversation history."""
     messages = st.session_state.conversation_state.get("messages", [])
 
     if not messages:
@@ -419,6 +668,7 @@ def main():
         initial_sidebar_state="expanded",
     )
 
+
     # Initialize session state
     initialize_session_state()
 
@@ -436,7 +686,7 @@ def main():
         try:
             api_key = settings.get_llm_api_key()
             st.success(f"✅ API Key: {api_key[:10]}...")
-        except:
+        except Exception:
             st.error("❌ API Key not configured")
 
         # Conversation Status
@@ -488,22 +738,72 @@ def main():
         with chat_container:
             display_conversation()
 
-        # Input area
-        user_input = st.text_input(
-            "Your message:", placeholder="Type your response here...", key="user_input"
-        )
-
-        col1_1, col1_2 = st.columns([1, 5])
-        with col1_1:
-            if st.button("🎤 Voice Input", use_container_width=True):
-                st.info("Voice input feature coming soon...")
-        with col1_2:
-            if st.button("Send", type="primary", use_container_width=True):
-                if user_input:
-                    # Process the user message
-                    process_user_message(user_input)
-                    # Clear the input
-                    st.rerun()
+        # Input area with inline voice recording
+        col_input, col_voice, col_send = st.columns([6, 1, 1])
+        
+        with col_input:
+            user_input = st.text_input(
+                "Your message:", 
+                placeholder="Type your response here...", 
+                key="user_input",
+                label_visibility="collapsed"
+            )
+        
+        with col_voice:
+            # Direct inline voice recorder
+            audio_bytes = audio_recorder(
+                text="🎤",
+                recording_color="#e74c3c",
+                neutral_color="#3498db",
+                icon_name="microphone",
+                icon_size="1x",
+                key="inline_voice_recorder"
+            )
+            
+        with col_send:
+            send_button = st.button("Send", type="primary", use_container_width=True)
+        
+        # Handle voice input with session state to prevent loops
+        if audio_bytes:
+            # Check if this is a new recording
+            last_audio_hash = st.session_state.get("last_audio_hash")
+            current_audio_hash = hash(audio_bytes)
+            
+            if last_audio_hash != current_audio_hash:
+                st.session_state.last_audio_hash = current_audio_hash
+                
+                with st.spinner("🔄 Processing voice..."):
+                    try:
+                        speech_service = st.session_state.speech_service
+                        audio_dict = {
+                            'bytes': audio_bytes,
+                            'sample_rate': 44100,
+                            'format': 'wav'
+                        }
+                        
+                        transcribed_text = speech_service.transcribe_audio_dict(audio_dict)
+                        
+                        if transcribed_text:
+                            # Store in session state instead of immediate processing
+                            st.session_state.pending_voice_message = transcribed_text
+                            st.rerun()
+                        else:
+                            st.warning("Could not transcribe audio. Please try again.")
+                            
+                    except Exception as e:
+                        st.error(f"Voice processing error: {e}")
+        
+        # Process pending voice message
+        if st.session_state.get("pending_voice_message"):
+            voice_message = st.session_state.pending_voice_message
+            del st.session_state.pending_voice_message
+            process_user_message(voice_message)
+            st.rerun()
+        
+        # Handle text input
+        elif send_button and user_input:
+            process_user_message(user_input)
+            st.rerun()
 
     with col2:
         st.header("Interview Progress")
@@ -532,7 +832,7 @@ def main():
         )
         progress_value = completed_fields / total_fields if total_fields > 0 else 0
 
-        progress = st.progress(progress_value)
+        st.progress(progress_value)
         st.write(f"Topics Covered: {completed_fields}/{total_fields}")
 
         # Field checklist
