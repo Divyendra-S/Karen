@@ -148,6 +148,20 @@ Stay helpful and professional while gathering complete job details!"""
 
             # Update conversation phase if needed
             update_conversation_phase(st.session_state.conversation_state)
+            
+            # Check if interview is complete and add completion message
+            if check_if_interview_complete(st.session_state.conversation_state.get("job_data", {})):
+                if not st.session_state.conversation_state.get("completion_message_sent"):
+                    completion_message = {
+                        "role": "assistant",
+                        "content": "Perfect! I've gathered all the information needed. Your professional job description is ready to generate! 🎉",
+                        "message_type": "completion",
+                        "timestamp": "2025-08-30T22:00:00Z",
+                    }
+                    st.session_state.conversation_state["messages"].append(completion_message)
+                    st.session_state.conversation_state["completion_message_sent"] = True
+                    st.session_state.conversation_state["is_complete"] = True
+                    st.rerun()
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -583,7 +597,7 @@ def is_field_complete(field_name: str, job_data: dict) -> bool:
         elif field_name == "education":
             return bool(field_value.get("level"))
         elif field_name == "salary":
-            return True  # Optional field
+            return bool(field_value.get("min_salary") or field_value.get("type") == "competitive")
         elif field_name == "additional_requirements":
             return True  # Optional field
     else:
@@ -802,7 +816,19 @@ Generate a complete, ready-to-post job description now:"""
 
 def check_if_interview_complete(job_data: Dict[str, Any]) -> bool:
     """Check if enough information has been collected to generate a JD."""
-    required_fields = ['job_title', 'department', 'experience', 'employment_type', 'location']
+    # All essential fields needed for a complete job description
+    required_fields = [
+        'job_title', 
+        'department', 
+        'experience', 
+        'employment_type', 
+        'location',
+        'responsibilities',
+        'skills',
+        'education',
+        'salary'
+    ]
+    # Note: only additional_requirements is optional
     
     for field in required_fields:
         if not is_field_complete(field, job_data):
@@ -952,30 +978,38 @@ def main():
                         process_user_message(option)
                         st.rerun()
 
-        # Input area with inline voice recording
-        col_input, col_voice, col_send = st.columns([6, 1, 1])
-        
-        with col_input:
-            user_input = st.text_input(
-                "Your message:", 
-                placeholder="Type your response here...", 
-                key="user_input",
-                label_visibility="collapsed"
-            )
-        
-        with col_voice:
-            # Direct inline voice recorder
-            audio_bytes = audio_recorder(
-                text="🎤",
-                recording_color="#e74c3c",
-                neutral_color="#3498db",
-                icon_name="microphone",
-                icon_size="1x",
-                key="inline_voice_recorder"
-            )
+        # Show input area only if interview is not complete
+        if not st.session_state.conversation_state.get("is_complete"):
+            # Input area with inline voice recording
+            col_input, col_voice, col_send = st.columns([6, 1, 1])
             
-        with col_send:
-            send_button = st.button("Send", type="primary", use_container_width=True)
+            with col_input:
+                user_input = st.text_input(
+                    "Your message:", 
+                    placeholder="Type your response here...", 
+                    key="user_input",
+                    label_visibility="collapsed"
+                )
+            
+            with col_voice:
+                # Direct inline voice recorder
+                audio_bytes = audio_recorder(
+                    text="🎤",
+                    recording_color="#e74c3c",
+                    neutral_color="#3498db",
+                    icon_name="microphone",
+                    icon_size="1x",
+                    key="inline_voice_recorder"
+                )
+                
+            with col_send:
+                send_button = st.button("Send", type="primary", use_container_width=True)
+        else:
+            # Show completion message when interview is done
+            st.success("✅ Interview Complete! Your job description is ready to generate.")
+            user_input = None
+            audio_bytes = None
+            send_button = False
         
         # Handle voice input with session state to prevent loops
         if audio_bytes:
@@ -1026,7 +1060,7 @@ def main():
         job_data = st.session_state.conversation_state.get("job_data", {})
 
         # Progress indicator using proper field completion logic
-        total_fields = 10
+        total_fields = 9
         field_names = [
             "job_title",
             "department",
@@ -1037,7 +1071,6 @@ def main():
             "skills",
             "education",
             "salary",
-            "additional_requirements",
         ]
         completed_fields = len(
             [field for field in field_names if is_field_complete(field, job_data)]
@@ -1099,7 +1132,7 @@ def main():
         else:
             st.info("Complete the interview to generate your professional job description...")
             missing_fields = []
-            required_fields = ['job_title', 'department', 'experience', 'employment_type', 'location']
+            required_fields = ['job_title', 'department', 'experience', 'employment_type', 'location', 'responsibilities', 'skills', 'education', 'salary']
             for field in required_fields:
                 if not is_field_complete(field, job_data):
                     missing_fields.append(field.replace('_', ' ').title())
