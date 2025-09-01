@@ -13,10 +13,30 @@ from app.utils.logger import logger
 from core.models.graph_state import create_initial_graph_state
 from core.graph.nodes.greeting import greeting_node
 from core.services.direct_speech_service import get_direct_speech_service
+from core.services.simple_voice_service import (
+    create_simple_voice_service_factory,
+    create_simple_streamlit_interface,
+)
+from core.services.tts_service import (
+    create_tts_service_factory,
+    create_streamlit_voice_output,
+    create_voice_response_handler,
+)
+from core.services.enhanced_voice_interface import (
+    create_enhanced_streamlit_voice_interface,
+    VoiceConversationState,
+)
+from core.services.simplified_realtime_voice import (
+    create_simplified_realtime_interface,
+    RealtimeConfig,
+)
+from core.types.voice_types import VoiceConfig, VoiceModel, ConversationMode
 from audio_recorder_streamlit import audio_recorder
 from groq import Groq
 from typing import List, Dict, Any
 import json
+import os
+import time
 
 
 def initialize_session_state():
@@ -37,6 +57,59 @@ def initialize_session_state():
     
     if "speech_service" not in st.session_state:
         st.session_state.speech_service = get_direct_speech_service()
+    
+    # Initialize voice service for Pipecat integration
+    if "voice_service" not in st.session_state:
+        try:
+            env_vars = {
+                "GOOGLE_API_KEY": os.getenv("GOOGLE_API_KEY", ""),
+                "VOICE_MODEL": os.getenv("VOICE_MODEL", "Puck"),
+                "AUDIO_SAMPLE_RATE": os.getenv("AUDIO_SAMPLE_RATE", "16000"),
+                "ENABLE_VOICE_MODE": os.getenv("ENABLE_VOICE_MODE", "true"),
+            }
+            
+            voice_factory = create_simple_voice_service_factory()
+            st.session_state.voice_service = voice_factory(env_vars)
+            st.session_state.voice_mode_active = False
+            
+            if env_vars["GOOGLE_API_KEY"]:
+                logger.info("Simple voice service initialized with Gemini")
+            else:
+                logger.info("Simple voice service initialized with fallback responses")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize voice service: {e}")
+            st.session_state.voice_service = None
+    
+    # Initialize voice interface functions
+    if "voice_interface" not in st.session_state:
+        st.session_state.voice_interface = create_simple_streamlit_interface()
+        st.session_state.enhanced_voice_interface = create_enhanced_streamlit_voice_interface()
+    
+    # Initialize TTS service for voice output
+    if "tts_service" not in st.session_state:
+        try:
+            tts_factory = create_tts_service_factory()
+            st.session_state.tts_service = tts_factory({
+                "language": "en",
+                "voice_speed": 1.1,  # Slightly faster for natural conversation
+                "volume": 0.8
+            })
+            st.session_state.voice_output_interface = create_streamlit_voice_output()
+            logger.info("TTS service initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize TTS service: {e}")
+            st.session_state.tts_service = None
+    
+    # Initialize simplified real-time voice services
+    if "realtime_interface" not in st.session_state:
+        try:
+            st.session_state.realtime_interface = create_simplified_realtime_interface()
+            st.session_state.realtime_mode = False
+            logger.info("Simplified real-time voice interface initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize real-time voice: {e}")
+            st.session_state.realtime_interface = None
 
 
 def process_user_message(user_input: str):
@@ -923,6 +996,29 @@ def main():
             )
             st.metric("Messages", msg_count)
             st.metric("Phase", phase)
+            
+            # Voice mode status
+            voice_service = st.session_state.get("voice_service")
+            voice_active = st.session_state.get("voice_mode_active", False)
+            
+            if voice_service:
+                st.metric("Voice Mode", "🔊 Active" if voice_active else "⌨️ Text")
+                
+                # TTS availability
+                tts_service = st.session_state.get("tts_service")
+                st.metric("AI Speech", "🔊 Available" if tts_service else "📝 Text Only")
+                
+                # Voice processing metrics
+                if st.session_state.get("processing_time"):
+                    st.metric("Last Processing", f"{st.session_state.processing_time:.0f}ms")
+                
+                # Voice conversation stats
+                messages = st.session_state.conversation_state.get("messages", [])
+                voice_messages = [m for m in messages if m.get("source") == "voice"]
+                if voice_messages:
+                    st.metric("Voice Messages", len(voice_messages))
+            else:
+                st.metric("Voice Mode", "❌ Unavailable")
 
             # Show gathered information
             job_data = st.session_state.conversation_state.get("job_data", {})
@@ -962,6 +1058,15 @@ def main():
         chat_container = st.container()
         with chat_container:
             display_conversation()
+            
+            # Voice conversation status
+            if st.session_state.get("voice_mode_active"):
+                voice_messages = [m for m in st.session_state.conversation_state.get("messages", []) if m.get("source") == "voice"]
+                if voice_messages:
+                    last_voice_msg = voice_messages[-1]
+                    if last_voice_msg.get("role") == "assistant":
+                        processing_time = last_voice_msg.get("processing_time", 0)
+                        st.success(f"🔊 Last AI response spoken (processed in {processing_time:.0f}ms)")
 
         # Quick Options Section
         current_field = st.session_state.conversation_state.get('current_field')
@@ -980,30 +1085,191 @@ def main():
 
         # Show input area only if interview is not complete
         if not st.session_state.conversation_state.get("is_complete"):
-            # Input area with inline voice recording
-            col_input, col_voice, col_send = st.columns([6, 1, 1])
+            # Voice mode toggle
+            voice_service = st.session_state.get("voice_service")
+            voice_available = voice_service is not None
             
-            with col_input:
-                user_input = st.text_input(
-                    "Your message:", 
-                    placeholder="Type your response here...", 
-                    key="user_input",
-                    label_visibility="collapsed"
-                )
-            
-            with col_voice:
-                # Direct inline voice recorder
-                audio_bytes = audio_recorder(
-                    text="🎤",
-                    recording_color="#e74c3c",
-                    neutral_color="#3498db",
-                    icon_name="microphone",
-                    icon_size="1x",
-                    key="inline_voice_recorder"
-                )
+            if voice_available:
+                col_toggle, col_realtime, col_status = st.columns([1, 1, 2])
                 
-            with col_send:
-                send_button = st.button("Send", type="primary", use_container_width=True)
+                with col_toggle:
+                    voice_mode = st.toggle("🎤 Voice Mode", value=st.session_state.get("voice_mode_active", False))
+                
+                with col_realtime:
+                    if voice_mode:
+                        realtime_mode = st.toggle("⚡ Real-time", value=st.session_state.get("realtime_mode", False))
+                        if realtime_mode != st.session_state.get("realtime_mode", False):
+                            st.session_state.realtime_mode = realtime_mode
+                            st.rerun()
+                
+                with col_status:
+                    if voice_mode != st.session_state.get("voice_mode_active", False):
+                        # Toggle voice mode using simplified service
+                        voice_interface = st.session_state.voice_interface
+                        voice_service = st.session_state.voice_service
+                        
+                        conversation_context = {
+                            "current_field": st.session_state.conversation_state.get("current_field"),
+                            "job_data": st.session_state.conversation_state.get("job_data", {}),
+                            "messages": st.session_state.conversation_state.get("messages", [])
+                        }
+                        
+                        if voice_mode:  # Turning ON voice mode
+                            if voice_interface["start_voice"](voice_service, conversation_context):
+                                st.session_state.voice_mode_active = True
+                                st.success("🔊 Voice mode activated!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to start voice mode")
+                        else:  # Turning OFF voice mode
+                            if voice_interface["stop_voice"](voice_service):
+                                st.session_state.voice_mode_active = False
+                                st.success("⌨️ Text mode activated!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to stop voice mode")
+                    
+                    # Voice mode status with enhanced info and tips
+                    if st.session_state.get("voice_mode_active"):
+                        tts_available = st.session_state.get("tts_service") is not None
+                        realtime_active = st.session_state.get("realtime_mode", False)
+                        
+                        if realtime_active:
+                            # Real-time mode status
+                            if st.session_state.get("realtime_session_active"):
+                                st.success("⚡ **Real-time Voice Active**\n- 🎤 Speak continuously\n- 🔊 AI responds instantly\n- No button needed")
+                            else:
+                                st.warning("⚡ **Real-time Starting...**\n- Connecting to voice pipeline\n- Please wait")
+                        elif tts_available:
+                            st.info("🔊 **Voice-to-Voice Mode Active**\n- 🎤 Speak your response\n- 🔊 AI will speak back\n- Press mic button to record")
+                            
+                            # Show voice conversation tips
+                            with st.expander("💡 Voice Conversation Tips", expanded=False):
+                                enhanced_interface = st.session_state.get("enhanced_voice_interface", {})
+                                if enhanced_interface and "get_conversation_tips" in enhanced_interface:
+                                    tips = enhanced_interface["get_conversation_tips"]()
+                                    for tip in tips:
+                                        st.markdown(tip)
+                        else:
+                            st.info("🎤 **Voice Input Mode Active**\n- 🎤 Speak your response\n- 📝 AI will respond with text\n- Press mic button to record")
+                    else:
+                        st.info("⌨️ **Text Mode Active** - Type your responses below")
+            
+            # Input area - different layouts for real-time vs batch voice
+            realtime_active = st.session_state.get("realtime_mode", False) and st.session_state.get("voice_mode_active", False)
+            
+            if realtime_active:
+                # Real-time voice interface
+                st.markdown("### ⚡ Real-time Voice Conversation")
+                
+                # Real-time session controls
+                col_start, col_stop, col_status = st.columns([1, 1, 2])
+                
+                with col_start:
+                    if st.button("▶️ Start Real-time", type="primary"):
+                        # Start simplified real-time session
+                        realtime_interface = st.session_state.get("realtime_interface")
+                        voice_service = st.session_state.get("voice_service")
+                        tts_service = st.session_state.get("tts_service")
+                        
+                        if realtime_interface and voice_service and tts_service:
+                            try:
+                                result = realtime_interface["start_conversation"](
+                                    voice_service,
+                                    tts_service,
+                                    {"port": 8765}
+                                )
+                                
+                                if result["success"]:
+                                    st.session_state.realtime_session_active = True
+                                    st.success(f"✅ Real-time voice started!\n🔗 {result.get('websocket_url')}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed to start: {result.get('error')}")
+                            except Exception as e:
+                                st.error(f"Real-time start error: {e}")
+                        else:
+                            st.error("Voice services not available")
+                
+                with col_stop:
+                    if st.session_state.get("realtime_session_active"):
+                        if st.button("⏹️ Stop Real-time"):
+                            realtime_interface = st.session_state.get("realtime_interface")
+                            if realtime_interface:
+                                try:
+                                    stopped = realtime_interface["stop_conversation"]()
+                                    if stopped:
+                                        st.session_state.realtime_session_active = False
+                                        st.success("⏹️ Real-time voice stopped")
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to stop real-time session")
+                                except Exception as e:
+                                    st.error(f"Stop error: {e}")
+                
+                with col_status:
+                    if st.session_state.get("realtime_session_active"):
+                        realtime_interface = st.session_state.get("realtime_interface")
+                        if realtime_interface:
+                            try:
+                                status = realtime_interface["get_status"]()
+                                if status["is_running"]:
+                                    st.metric("Status", "🟢 Live")
+                                    st.metric("Connections", status["active_connections"])
+                                    st.metric("Progress", f"{status['completed_fields']}/{status['total_fields']}")
+                                else:
+                                    st.metric("Status", "🔴 Stopped")
+                            except Exception as e:
+                                st.error(f"Status error: {e}")
+                
+                # Real-time conversation area
+                if st.session_state.get("realtime_session_active"):
+                    st.markdown("**🎤 Speak naturally - AI will respond in real-time**")
+                    
+                    # Show WebSocket connection info
+                    st.code("ws://localhost:8765", language="text")
+                    st.info("💬 Connect your browser's microphone to the WebSocket above for real-time conversation")
+                    
+                    # Show live conversation status
+                    realtime_interface = st.session_state.get("realtime_interface")
+                    if realtime_interface:
+                        try:
+                            status = realtime_interface["get_status"]()
+                            if status["message_count"] > 0:
+                                st.success(f"💬 {status['message_count']} messages exchanged")
+                        except Exception:
+                            pass
+                
+                # No traditional input in real-time mode
+                user_input = None
+                audio_bytes = None
+                send_button = False
+                
+            else:
+                # Traditional batch voice recording interface
+                col_input, col_voice, col_send = st.columns([6, 1, 1])
+            
+                with col_input:
+                    user_input = st.text_input(
+                        "Your message:", 
+                        placeholder="Type your response here...", 
+                        key="user_input",
+                        label_visibility="collapsed"
+                    )
+                
+                with col_voice:
+                    # Direct inline voice recorder
+                    audio_bytes = audio_recorder(
+                        text="🎤",
+                        recording_color="#e74c3c",
+                        neutral_color="#3498db",
+                        icon_name="microphone",
+                        icon_size="1x",
+                        key="inline_voice_recorder"
+                    )
+                    
+                with col_send:
+                    send_button = st.button("Send", type="primary", use_container_width=True)
         else:
             # Show completion message when interview is done
             st.success("✅ Interview Complete! Your job description is ready to generate.")
@@ -1022,21 +1288,73 @@ def main():
                 
                 with st.spinner("🔄 Processing voice..."):
                     try:
-                        speech_service = st.session_state.speech_service
-                        audio_dict = {
-                            'bytes': audio_bytes,
-                            'sample_rate': 44100,
-                            'format': 'wav'
-                        }
-                        
-                        transcribed_text = speech_service.transcribe_audio_dict(audio_dict)
-                        
-                        if transcribed_text:
-                            # Store in session state instead of immediate processing
-                            st.session_state.pending_voice_message = transcribed_text
-                            st.rerun()
+                        # Use voice service if available and voice mode is active
+                        if (st.session_state.get("voice_mode_active") and 
+                            st.session_state.get("voice_service")):
+                            
+                            # First transcribe with existing Groq Whisper
+                            speech_service = st.session_state.speech_service
+                            audio_dict = {
+                                'bytes': audio_bytes,
+                                'sample_rate': 44100,
+                                'format': 'wav'
+                            }
+                            
+                            transcribed_text = speech_service.transcribe_audio_dict(audio_dict)
+                            
+                            if transcribed_text:
+                                # Use enhanced voice interface for better experience
+                                enhanced_interface = st.session_state.enhanced_voice_interface
+                                
+                                with st.spinner("🔊 AI processing and speaking..."):
+                                    # Process with enhanced voice interface (includes TTS)
+                                    voice_result = enhanced_interface["process_voice_turn"](
+                                        transcribed_text,
+                                        st.session_state
+                                    )
+                                
+                                if voice_result["success"]:
+                                    # Store results
+                                    st.session_state.pending_voice_message = voice_result["transcript"]
+                                    st.session_state.pending_ai_response = voice_result["response"]
+                                    st.session_state.processing_time = voice_result.get("processing_time", 0)
+                                    
+                                    # Show voice conversation feedback
+                                    if voice_result.get("speech_played"):
+                                        ai_time = voice_result.get("ai_processing_time", 0)
+                                        tts_time = voice_result.get("tts_time", 0)
+                                        st.success(f"🔊 AI spoke response! (AI: {ai_time:.0f}ms, TTS: {tts_time:.0f}ms)")
+                                    else:
+                                        st.info("✅ AI response generated (speech not available)")
+                                    
+                                    # Show conversation guidance
+                                    if voice_result.get("guidance"):
+                                        guidance = voice_result["guidance"]
+                                        st.info(f"💡 **Next**: {guidance.get('prompt', '')}")
+                                    
+                                    st.rerun()
+                                else:
+                                    st.error(f"Voice processing failed: {voice_result.get('error', 'Unknown error')}")
+                            else:
+                                st.warning("Could not transcribe audio. Please try again.")
+                                
                         else:
-                            st.warning("Could not transcribe audio. Please try again.")
+                            # Fallback to existing Groq Whisper processing
+                            speech_service = st.session_state.speech_service
+                            audio_dict = {
+                                'bytes': audio_bytes,
+                                'sample_rate': 44100,
+                                'format': 'wav'
+                            }
+                            
+                            transcribed_text = speech_service.transcribe_audio_dict(audio_dict)
+                            
+                            if transcribed_text:
+                                # Store in session state instead of immediate processing
+                                st.session_state.pending_voice_message = transcribed_text
+                                st.rerun()
+                            else:
+                                st.warning("Could not transcribe audio. Please try again.")
                             
                     except Exception as e:
                         st.error(f"Voice processing error: {e}")
@@ -1045,8 +1363,44 @@ def main():
         if st.session_state.get("pending_voice_message"):
             voice_message = st.session_state.pending_voice_message
             del st.session_state.pending_voice_message
-            process_user_message(voice_message)
-            st.rerun()
+            
+            # If we have a pending AI response from voice mode, add it directly
+            if st.session_state.get("pending_ai_response"):
+                ai_response = st.session_state.pending_ai_response
+                processing_time = st.session_state.get("processing_time", 0)
+                del st.session_state.pending_ai_response
+                
+                # Add both messages to conversation state
+                user_message = {
+                    "role": "user",
+                    "content": voice_message,
+                    "message_type": "voice_input",
+                    "timestamp": time.time(),
+                    "source": "voice"
+                }
+                
+                ai_message = {
+                    "role": "assistant", 
+                    "content": ai_response,
+                    "message_type": "voice_response",
+                    "timestamp": time.time(),
+                    "source": "voice",
+                    "processing_time": processing_time
+                }
+                
+                st.session_state.conversation_state["messages"].extend([user_message, ai_message])
+                
+                # Extract job data from voice input
+                extract_job_data(voice_message, st.session_state.conversation_state)
+                add_field_validation_feedback(st.session_state.conversation_state)
+                update_current_field_after_extraction(st.session_state.conversation_state)
+                update_conversation_phase(st.session_state.conversation_state)
+                
+                st.rerun()
+            else:
+                # Process normally for non-voice mode
+                process_user_message(voice_message)
+                st.rerun()
         
         # Handle text input
         elif send_button and user_input:

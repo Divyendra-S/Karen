@@ -20,6 +20,16 @@ streamlit-chat==0.1.1
 audio-recorder-streamlit==0.0.10
 pydub==0.25.1
 
+# Pipecat for real-time voice pipeline
+pipecat-ai>=0.0.47
+google-generativeai>=0.8.0
+Pillow>=10.0.0
+silero-vad>=4.0.0
+
+# Text-to-Speech for voice responses
+gtts>=2.3.0
+pygame>=2.5.0
+
 # Logging and utilities
 loguru==0.7.2
 python-multipart==0.0.6
