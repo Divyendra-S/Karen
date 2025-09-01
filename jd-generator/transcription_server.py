@@ -92,8 +92,8 @@ if __name__ == '__main__':
     
     if init_groq():
         print("✅ Groq client ready")
-        print("🚀 Starting server on http://localhost:8504")
-        app.run(host='0.0.0.0', port=8504, debug=False)
+        print("🚀 Starting server on http://localhost:8505")
+        app.run(host='0.0.0.0', port=8505, debug=False)
     else:
         print("❌ Failed to initialize Groq client")
         sys.exit(1)

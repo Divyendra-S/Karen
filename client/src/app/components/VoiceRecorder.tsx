@@ -74,7 +74,7 @@ export default function VoiceRecorder({ onTranscript, isConnected }: VoiceRecord
           const formData = new FormData();
           formData.append('audio', audioBlob, 'recording.webm');
           
-          const response = await fetch('http://localhost:8504/transcribe', {
+          const response = await fetch('http://localhost:8505/transcribe', {
             method: 'POST',
             body: formData
           });
